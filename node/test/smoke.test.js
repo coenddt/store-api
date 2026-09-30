@@ -19,6 +19,10 @@ class MockStore {
 
   list() { return ['user', 'userDeleted']; }
 
+  get(name) {
+    return name === 'user' ? { name: 'user', fields: { name: { type: 'string' }, age: { type: 'number' } } } : null;
+  }
+
   async query(gql, params) {
     this.lastQuery = { gql, params };
     return [...this.rows.values()];
@@ -90,14 +94,18 @@ test('CRUD 全链路 + GQL 透传', async (t) => {
   const listed = await app.inject({ method: 'GET', url: '/api/user?q=($condition: @c0)&p.c0={"age":{"$gte":18}}' });
   assert.equal(listed.statusCode, 200);
   assert.ok(Array.isArray(listed.json().data));
-  // 拼接结果 = 资源名 + q 原样（spec/02-params.md）
+  // 拼接结果 = 资源名 + q 原样（spec/02-params.md）；带 q 时投影完全由 q 决定
   assert.equal(store.lastQuery.gql, 'user($condition: @c0)');
   assert.deepEqual(store.lastQuery.params, { c0: { age: { $gte: 18 } } });
 
   const id = created.json().data._id;
+  const listedNoQ = await app.inject({ method: 'GET', url: '/api/user' });
+  assert.equal(listedNoQ.statusCode, 200);
+  assert.equal(store.lastQuery.gql, 'user { name, age }'); // 无 q → 适配器生成全字段投影（spec/02）
+
   const got = await app.inject({ method: 'GET', url: `/api/user/${id}` });
   assert.equal(got.statusCode, 200);
-  assert.equal(store.lastQuery.gql, 'user($condition: @c0)');
+  assert.equal(store.lastQuery.gql, 'user($condition: @c0) { name, age }');
   assert.deepEqual(store.lastQuery.params, { c0: { _id: id } });
 
   const patched = await app.inject({ method: 'PATCH', url: `/api/user/${id}`, payload: { age: 2 } });

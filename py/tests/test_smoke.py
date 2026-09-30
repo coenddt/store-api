@@ -33,6 +33,11 @@ class MockStore:
     def list(self):
         return ["user", "userDeleted"]
 
+    def get(self, name):
+        if name == "user":
+            return {"name": "user", "fields": {"name": {"type": "string"}, "age": {"type": "number"}}}
+        raise KeyError(name)
+
     def set_context(self, ctx):
         self.last_context = ctx
 
@@ -123,9 +128,14 @@ def test_crud_full_chain():
     # 拼接结果 = 资源名 + q 原样（spec/02-params.md）
     assert store.last_query == ("user($condition: @c0)", {"c0": {"age": {"$gte": 18}}})
 
+    # 无 q → 适配器生成全字段投影（spec/02）
+    listed_no_q = client.get("/api/user")
+    assert listed_no_q.status_code == 200
+    assert store.last_query == ("user { name, age }", {})
+
     got = client.get(f"/api/user/{rid}")
     assert got.status_code == 200
-    assert store.last_query == ("user($condition: @c0)", {"c0": {"_id": rid}})
+    assert store.last_query == ("user($condition: @c0) { name, age }", {"c0": {"_id": rid}})
 
     patched = client.patch(f"/api/user/{rid}", json={"age": 2})
     assert patched.status_code == 200

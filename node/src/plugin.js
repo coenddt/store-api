@@ -88,19 +88,32 @@ async function storeApiPlugin(fastify, opts) {
     return body;
   }
 
+  /**
+   * 从 store 元数据生成显式投影串（` { f1, f2 }`）。
+   * store.get(name) 缺失 / fields 为空 → 空串（无投影，data 仅 _id——上游 schema 定义不完整的显式后果）。
+   */
+  function schemaProjection(store, name) {
+    const meta = typeof store.get === 'function' ? store.get(name) : null;
+    const fields = meta && meta.fields ? Object.keys(meta.fields) : [];
+    return fields.length ? ` { ${fields.join(', ')} }` : '';
+  }
+
   const names = resources || filterArchived(store.list());
   for (const name of names) {
     const base = `/${name}`;
     const oneParams = (id) => ({ c0: { [idField]: id } });
+    // 显式投影（spec/01+02）：GQL 省略投影段 = 只返回 _id（三端 core 契约）。
+    // 列表路由仅在 q 缺失时用它；q 存在时投影完全由 q 决定，适配层不追加。
+    const proj = schemaProjection(store, name);
 
     fastify.get(base, async (req) => {
       const params = parseQueryParams(req.query);
-      const gql = name + (req.query.q || '');
+      const gql = name + (req.query.q || proj);
       return { data: await store.query(gql, params) };
     });
 
     fastify.get(`${base}/:id`, async (req) => {
-      const data = await store.queryOne(`${name}($condition: @c0)`, oneParams(req.params.id));
+      const data = await store.queryOne(`${name}($condition: @c0)${proj}`, oneParams(req.params.id));
       if (data == null) throw notFound(`记录不存在: ${idField}=${req.params.id}`);
       return { data };
     });

@@ -69,11 +69,17 @@ impl Store for RustStoreAdapter {
 
     async fn remove(&self, schema: &str, condition: &Value) -> Result<Value, String> {
         let ctx = self.ctx.read().await.clone();
-        self.host.remove(schema, condition, ctx.as_ref()).await
+        // Box::pin 具体化 future 类型：宿主 remove 的事务借用链（Txn→Conn 枚举）
+        // 在 async-trait 的 Box<dyn Future + Send> 泛化检查下触发保守误报
+        Box::pin(self.host.remove(schema, condition, ctx.as_ref())).await
     }
 
     async fn set_context(&self, ctx: Value) {
         *self.ctx.write().await = context_from_value(&ctx);
+    }
+
+    async fn schema_fields(&self, schema: &str) -> Vec<String> {
+        self.host.schema_fields(schema).unwrap_or_default()
     }
 
     fn is_permission_error(&self, err: &String) -> bool {

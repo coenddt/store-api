@@ -42,6 +42,11 @@ pub trait Store: Send + Sync {
     async fn remove(&self, schema: &str, condition: &Value) -> Result<Value, StoreErr>;
     /// 每请求上下文注入（spec/04；rust-store 为显式入参模型，宿主实现自行管理当前 ctx）
     async fn set_context(&self, _ctx: Value) {}
+    /// schema 的标量字段名列表（spec/01+02：适配器据此生成显式投影——
+    /// GQL 省略投影段 = 只返回 _id。空 Vec = 无投影，data 仅 _id 属上游 schema 定义不完整的显式后果）
+    async fn schema_fields(&self, _schema: &str) -> Vec<String> {
+        Vec::new()
+    }
     /// 权限错误判定（spec/03：按类型判定。Rust 形态 = core `ERR_PERMISSION:` 前缀契约）
     fn is_permission_error(&self, err: &StoreErr) -> bool {
         err.starts_with("ERR_PERMISSION")
@@ -167,10 +172,26 @@ async fn list_resource(
         None => Map::new(),
     };
     let q = raw.as_deref().and_then(|s| extract_q(s)).unwrap_or_default();
-    let gql = format!("{resource}{q}");
+    // spec/02：q 缺失 → 全字段投影（省略投影 = 只回 _id）；q 存在 → 投影完全由 q 决定
+    let gql = if q.is_empty() {
+        let proj = schema_projection(&state, &resource).await;
+        format!("{resource}{proj}")
+    } else {
+        format!("{resource}{q}")
+    };
     match state.store.query(&gql, &params).await {
         Ok(rows) => ok_json(json!({ "data": rows })),
         Err(e) => store_err_response(&state, &e),
+    }
+}
+
+/// 显式投影串（spec/01+02）：字段列表来自 store 元数据；空列表 → 无投影（data 仅 _id，显式后果）
+async fn schema_projection(state: &AppState, resource: &str) -> String {
+    let fields = state.store.schema_fields(resource).await;
+    if fields.is_empty() {
+        String::new()
+    } else {
+        format!(" {{ {} }}", fields.join(", "))
     }
 }
 
@@ -190,7 +211,8 @@ async fn get_one(
     }
     let mut params = Map::new();
     params.insert("c0".into(), json!({ state.id_field.as_ref(): id }));
-    let gql = format!("{resource}($condition: @c0)");
+    let proj = schema_projection(&state, &resource).await;
+    let gql = format!("{resource}($condition: @c0){proj}");
     match state.store.query_one(&gql, &params).await {
         Ok(Some(doc)) => ok_json(json!({ "data": doc })),
         Ok(None) => StoreApiError::not_found(format!("记录不存在: {}={}", state.id_field, id))

@@ -30,6 +30,14 @@ impl Store for MockStore {
         vec!["user".into(), "userDeleted".into()]
     }
 
+    async fn schema_fields(&self, schema: &str) -> Vec<String> {
+        if schema == "user" {
+            vec!["name".into(), "age".into()]
+        } else {
+            Vec::new()
+        }
+    }
+
     async fn query(&self, gql: &str, params: &Map<String, Value>) -> Result<Vec<Value>, StoreErr> {
         *self.last_query.lock().unwrap() = Some((gql.to_string(), Value::Object(params.clone())));
         Ok(self.rows.lock().unwrap().clone())

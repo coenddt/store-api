@@ -24,10 +24,10 @@
 单条路由 `{id}` 绑定到主键字段等值条件。主键字段名由适配器选项 `idField` 指定，**双端默认均为 `'_id'`**，双端必须一致。条件形如 `{ [idField]: id }`（Node）/ `{ idField: id }`（Python），作为 `@c0` 参数绑进适配器生成的 GQL 串：
 
 ```
-GET /user/abc  ⇒  store.queryOne('user($condition: @c0) { ... }', { c0: { _id: 'abc' } })
+GET /user/abc  ⇒  store.queryOne('user($condition: @c0) { <全字段投影> }', { c0: { _id: 'abc' } })
 ```
 
-字段投影取自 Host 侧 schema 元数据的 `fields` 键列表（`store.get(name)`）；`fields` 为空时**省略投影段**——GQL 允许无 `{}` 段（rust-core `pipeline/parse.rs` 的 `parse_body`：无 `{` 时直接返回空投影，实证），由 store 按默认行为返回字段。
+**投影必须显式生成**（取 schema 注册定义的 `fields` 键列表，`GET /{resource}/{id}` 与 `POST` 返回文档同理）：GQL 省略投影段的契约语义是「只返回 `_id`」（实证：nodejs-store 参考实现 + rust-store 宿主一致行为，core `compute_keep` 对空 fields 仅保留 `_id`）——省略投影会让单条路由返回只剩 `_id` 的数据。schema 未声明 `fields` 时退化 为无投影（此时 data 仅含 `_id`，属上游 schema 定义不完整的显式可见后果，不静默兜底）。
 
 ## 归档表过滤（双端一致）
 

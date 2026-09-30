@@ -29,7 +29,7 @@ async fn fresh_router() -> axum::Router {
     .expect("注册失败");
 
     // SQL 后端物理 DDL（含 __present 哨兵列契约）
-    let pool = host.sqlite_pool().clone();
+    let pool = host.sqlite_pool().expect("SQLite 源").clone();
     for ddl in [
         "CREATE TABLE \"user\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, createdAt INTEGER, updatedAt INTEGER, \"__present\" TEXT)",
         "CREATE TABLE \"user_deleted\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER, \"__present\" TEXT)",

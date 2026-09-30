@@ -82,9 +82,38 @@ def create_app(
 
     names = resources if resources is not None else filter_archived(store.list())
     for name in names:
-        _register_resource(app, store, name, prefix, id_field, permission_error)
+        # 显式投影（spec/01+02）：GQL 省略投影段 = 只返回 _id（三端 core 契约）。
+        # 列表路由仅在 q 缺失时用它；q 存在时投影完全由 q 决定，适配层不追加。
+        proj = _schema_projection(store, name)
+        _register_resource(app, store, name, prefix, id_field, permission_error, proj)
 
     return app
+
+
+def _schema_projection(store: Any, name: str) -> str:
+    """从 store 元数据生成显式投影串（' { f1, f2 }'）。
+    取值顺序：store.get(name)（nodejs 形态）→ py_store.schema 模块（py-store 未在 Store 类暴露 get）。
+    两者皆不可得 / fields 为空 → 空串（无投影，data 仅 _id——上游 schema 定义不完整的显式后果）。"""
+    fields: dict | None = None
+    get = getattr(store, "get", None)
+    if callable(get):
+        try:
+            meta = get(name)
+        except KeyError:
+            meta = None
+        if isinstance(meta, dict):
+            fields = meta.get("fields")
+        else:
+            fields = getattr(meta, "fields", None)
+    if fields is None:
+        try:
+            from py_store import schema as py_schema
+
+            fields = (py_schema.get(name) or {}).get("fields")
+        except Exception:
+            fields = None
+    keys = list((fields or {}).keys())
+    return f" {{ {', '.join(keys)} }}" if keys else ""
 
 
 def _guard(permission_error: type[BaseException] | None) -> Callable:
@@ -111,6 +140,7 @@ def _register_resource(
     prefix: str,
     id_field: str,
     permission_error: type[BaseException] | None,
+    proj: str,
 ) -> None:
     # 工厂函数隔离闭包：handler 签名只含 Request 与路径参数，
     # 否则 FastAPI 会把捕获变量解析成查询参数（缺参即 422）
@@ -120,13 +150,14 @@ def _register_resource(
     @_guard(permission_error)
     async def list_resource(request: Request):
         params = parse_query_params(request.query_params)
-        gql = name + (request.query_params.get("q") or "")
+        # q 缺失 → 全字段投影（spec/02）；q 存在 → 投影完全由 q 决定
+        gql = name + (request.query_params.get("q") or proj)
         return {"data": await store.query(gql, params)}
 
     @app.get(base + "/{rid}")
     @_guard(permission_error)
     async def get_one(rid: str):
-        data = await store.query_one(f"{name}($condition: @c0)", {"c0": {id_field: rid}})
+        data = await store.query_one(f"{name}($condition: @c0){proj}", {"c0": {id_field: rid}})
         if data is None:
             raise not_found(f"记录不存在: {id_field}={rid}")
         return {"data": data}
