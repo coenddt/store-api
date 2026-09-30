@@ -45,15 +45,16 @@ app = create_app(store, prefix='/api')
 
 ```
 store-api/
-├── spec/          # 共享 REST 映射规范（双端实现的唯一依据）
+├── spec/          # 共享 REST 映射规范（三端实现的唯一依据）
 │   ├── 00-overview.md    # 定位与分层
 │   ├── 01-routing.md     # schema → 路由映射
 │   ├── 02-params.md      # 查询参数 → GQL 映射
 │   ├── 03-errors.md      # 错误 → HTTP 状态码映射
 │   └── 04-context.md     # 请求上下文 / RBAC 注入
-├── conformance/   # 双端一致性用例（同一份 JSON，双端各自执行、断言一致）
+├── conformance/   # 三端一致性用例（同一份 JSON，各端各自执行、断言一致）
 ├── node/          # store-api-node（Fastify 适配器）
-└── py/            # store-api-py（FastAPI 适配器）
+├── py/            # store-api-py（FastAPI 适配器）
+└── rust/          # store-api-rs（axum 适配器，消费 Store trait；rust-store 宿主直接实现该 trait 接入）
 ```
 
 ## 一致性纪律
@@ -62,6 +63,6 @@ store-api/
 
 ## 路线
 
-- v0：node / py 双包，CRUD + GQL 查询透传 + 错误映射 + 上下文注入（本仓库现状）
-- v1：`@fastify/swagger` 与 Pydantic 双端 OpenAPI 文档对齐；conformance 双端互验 CI
-- 之后：rust-store 宿主 crate（store-rs）落地后，增加 `rust/` axum 适配器为第三个包
+- v0：node / py / rust 三包，CRUD + GQL 查询透传 + 错误映射 + 上下文注入（本仓库现状）
+- v1：`@fastify/swagger` 与 Pydantic、utoipa 三端 OpenAPI 文档对齐；conformance 三端互验 CI
+- 依赖说明：rust/ 包通过 `Store` trait 解耦数据层；rust-store 宿主（rust-store 仓库 host/ crate，SQLite 端到端已通）实现该 trait 即可接入，待其发布 crates.io 后提供开箱实现
