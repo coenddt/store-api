@@ -1,0 +1,14 @@
+{
+  "name": "users-crud",
+  "resource": "user",
+  "steps": [
+    { "method": "POST", "path": "/api/user", "body": { "name": "alice", "age": 30 }, "expect": { "status": 201, "dataKeys": ["name", "age"] } },
+    { "method": "GET", "path": "/api/user?q=($condition: @c0)&p.c0={\"age\":{\"$gte\":18}}", "expect": { "status": 200 } },
+    { "method": "GET", "path": "/api/user/{id}", "useCreatedId": true, "expect": { "status": 200, "dataKeys": ["name"] } },
+    { "method": "PATCH", "path": "/api/user/{id}", "useCreatedId": true, "body": { "age": 31 }, "expect": { "status": 200, "dataKeys": ["age"] } },
+    { "method": "DELETE", "path": "/api/user/{id}", "useCreatedId": true, "expect": { "status": 200 } },
+    { "method": "GET", "path": "/api/user/{id}", "useCreatedId": true, "expect": { "status": 404, "errorCode": "NOT_FOUND" } },
+    { "method": "POST", "path": "/api/user", "body": [1, 2], "expect": { "status": 400, "errorCode": "INVALID_BODY" } },
+    { "method": "GET", "path": "/api/user?p.c0={\"age\":", "expect": { "status": 400, "errorCode": "INVALID_PARAM" } }
+  ]
+}

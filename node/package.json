@@ -1,0 +1,34 @@
+{
+  "name": "store-api-node",
+  "version": "0.1.0",
+  "description": "Fastify adapter that auto-generates RESTful APIs for nodejs-store schemas (schema-driven CRUD over GQL)",
+  "main": "src/index.js",
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "nodejs-store",
+    "fastify",
+    "rest",
+    "crud",
+    "gql"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "nodejs-store": ">=1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "nodejs-store": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "fastify": "^5.0.0"
+  }
+}
