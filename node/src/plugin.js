@@ -67,7 +67,9 @@ async function storeApiPlugin(fastify, opts) {
         err.code = 'CONTEXT_ERROR';
         throw err;
       }
-      if (ctx != null) await store.setContext(ctx);
+      // spec/04：返回 null/undefined 时同样显式注入空上下文（store.setContext(null) 语义为清除，
+      // 有状态持有的运行时禁止残留上一请求上下文，防身份跨请求泄漏）
+      await store.setContext(ctx);
     });
   }
 

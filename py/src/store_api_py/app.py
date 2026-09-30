@@ -75,8 +75,9 @@ def create_app(
                 if permission_error is not None and isinstance(e, permission_error):
                     return _respond(map_error(e, permission_error))
                 return _respond(context_error(str(e) or None))
-            if ctx is not None:
-                store.set_context(ctx)
+            # spec/04：返回 None 时同样显式注入空上下文（store.set_context(None) 语义为清除，
+            # 有状态持有的运行时禁止残留上一请求上下文，防身份跨请求泄漏）
+            store.set_context(ctx)
             return await call_next(request)
 
     names = resources if resources is not None else filter_archived(store.list())

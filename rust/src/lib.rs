@@ -10,6 +10,9 @@
 pub mod errors;
 pub mod params;
 
+#[cfg(feature = "rust-store")]
+pub mod adapter;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -112,7 +115,12 @@ async fn inject_context(
             state.store.set_context(ctx).await;
             next.run(request).await
         }
-        Ok(None) => next.run(request).await,
+        // spec/04：本请求无上下文 ⇒ 显式清除（set_context(null)），由 store 的 requireContext 档位决定是否拒绝。
+        // 有状态持有的运行时禁止残留上一请求上下文（防身份跨请求泄漏）。
+        Ok(None) => {
+            state.store.set_context(Value::Null).await;
+            next.run(request).await
+        }
         Err(e) => {
             if state.store.is_permission_error(&e.to_string()) {
                 let mapped = map_store_err(&e, |x| state.store.is_permission_error(&x.to_string()));

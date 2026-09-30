@@ -65,4 +65,4 @@ store-api/
 
 - v0：node / py / rust 三包，CRUD + GQL 查询透传 + 错误映射 + 上下文注入（本仓库现状）
 - v1：`@fastify/swagger` 与 Pydantic、utoipa 三端 OpenAPI 文档对齐；conformance 三端互验 CI
-- 依赖说明：rust/ 包通过 `Store` trait 解耦数据层；rust-store 宿主（rust-store 仓库 host/ crate，SQLite 端到端已通）实现该 trait 即可接入，待其发布 crates.io 后提供开箱实现
+- rust/ 开箱桥接：cargo feature `rust-store`（`RustStoreAdapter` 新类型实现 `Store` trait，git 依赖 rust-store 宿主，发布 crates.io 后改版本依赖）；桥接 e2e 用真实宿主 + 真实 SQLite 走完整 HTTP 栈（含 guest 403 / 归档事务化）

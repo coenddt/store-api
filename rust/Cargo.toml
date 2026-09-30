@@ -9,16 +9,27 @@ license = "MIT"
 name = "store_api_rs"
 path = "src/lib.rs"
 
+[features]
+# 开箱桥接：rust-store 宿主（rust_store::Store）→ 本 crate 的 Store trait。
+# 依赖走 git（宿主尚未发 crates.io；发布后改为版本依赖）。
+rust-store = ["dep:rust-store", "dep:rust-store-core"]
+
 [dependencies]
 axum = "0.8"
 serde_json = "1"
 async-trait = "0.1"
 futures = "0.3"
 form_urlencoded = "1"
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "sync"] }
+
+# 可选：rust-store 纯 Rust 宿主（gitee 为主源，github 镜像备用）
+rust-store = { git = "https://gitee.com/coenddt/rust-store.git", optional = true }
+rust-store-core = { git = "https://gitee.com/coenddt/rust-store.git", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 http = "1"
+# 桥接 e2e：直查 SQLite 验证归档表与 DDL（与 rust-store 宿主同版本线）
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
