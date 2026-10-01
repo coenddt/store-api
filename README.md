@@ -5,6 +5,7 @@ RESTful API auto-generation for the common-store data layer family (nodejs-store
 > 中文文档（主文档）：[README.zh-CN.md](./README.zh-CN.md)
 
 - Node: Fastify adapter (`store-api-node`, npm)
+- Go: net/http adapter (`store-api-go`, under `go/`, serving the go-store host; conformance runner in `go/conformance_test.go`)
 - Python: FastAPI adapter (`store-api-py`, PyPI)
 - Shared: `spec/` (single source of truth for routing/params/errors/context mapping) + `conformance/` (cross-runtime parity cases)
 

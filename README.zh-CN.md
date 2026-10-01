@@ -4,6 +4,7 @@
 
 - Node 端：Fastify 适配器（`store-api-node`，npm）
 - Python 端：FastAPI 适配器（`store-api-py`，PyPI）
+- Go 端：net/http 适配器（`store-api-go`，`go/` 子目录，适配 go-store 宿主；conformance runner 见 `go/conformance_test.go`）
 - 共享：`spec/` 一份 REST 映射规范 + `conformance/` 一套双端一致性用例
 
 ## 设计哲学：REST 只是 GQL 的 HTTP 皮
