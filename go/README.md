@@ -63,9 +63,20 @@ func main() {
 - `update` 影响 0 行返回 `200 {"data": null}`（中性返回不当错误）。
 - 权限错误按 core 稳定前缀判定（`ERR_PERMISSION:`），禁按文案匹配。
 
-## 已知 spec 缺口（如实记录）
+## REST 分页正确用法
 
-spec/03 表格中「GQL 解析失败 ⇒ 400」在现有 node/py 实现中同样未落地（无 code 的 store 错误统一 500）。Go 版与 node 行为保持一致（多端 parity 优先），如需落 spec 需三端同步补判定 + conformance 用例，属独立改动。
+core 的 GQL 语法中**参数值一律是 `@name` 命名引用**（py-store/nodejs-store 同构），不接受字面量。分页写法：
+
+```
+GET /api/user?q=($limit: @l, $skip: @s)&p.l=10&p.s=20
+```
+
+（spec/02 的示例已按此更正，v1 修订。）
+
+
+## 错误映射补充：GQL 解析失败
+
+GQL 解析失败（core 稳定前缀 `ERR_GQL_PARSE:`，spec/03 v1 修订）→ `400 {"error":{"code":"GQL_PARSE","message":<core 原文>}}`。此缺口曾在 node/py 实现中未落地（统一 500），现已四端同步修复并由 conformance 用例锁定。
 
 ## 相关仓库
 

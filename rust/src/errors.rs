@@ -44,8 +44,24 @@ impl IntoResponse for StoreApiError {
 /// 权限错误带 `ERR_PERMISSION:` 前缀（core command/mod.rs:80 `ERR_PERM_PREFIX`，
 /// 这是 core 的**类型级契约**，与 node 端 instanceof 同级，非 message 语义匹配）。
 pub fn store_code(err: &str) -> String {
-    // 首个冒号前缀（如 ERR_PERMISSION / ERR_TEXT2QUERY）即分类；无前缀则整体为码
-    err.split(':').next().unwrap_or("STORE_ERROR").to_string()
+    // 仅认 core 的稳定前缀集合（ERR_PERM_PREFIX / ERR_NO_CONTEXT / ERR_TEXT2QUERY /
+    // ERR_GQL_PARSE，见 core command/mod.rs 与 pipeline/parse.rs）；无前缀错误一律
+    // STORE_ERROR——禁把错误文案整串当 code（与 node/go 版对齐）。
+    const KNOWN: [(&str, &str); 4] = [
+        ("ERR_PERMISSION:", "ERR_PERMISSION"),
+        ("ERR_NO_CONTEXT:", "ERR_NO_CONTEXT"),
+        ("ERR_TEXT2QUERY:", "ERR_TEXT2QUERY"),
+        ("ERR_GQL_PARSE:", "GQL_PARSE"),
+    ];
+    for (prefix, class) in KNOWN {
+        if let Some(rest) = err.strip_prefix(prefix) {
+            return match rest.split_once(':') {
+                Some((seg, _)) if !seg.is_empty() => seg.to_string(),
+                _ => class.to_string(),
+            };
+        }
+    }
+    "STORE_ERROR".to_string()
 }
 
 pub fn store_message(err: &str) -> Option<String> {
@@ -60,6 +76,15 @@ pub fn map_store_err(err: &str, is_permission_error: impl Fn(&str) -> bool) -> S
             status: StatusCode::FORBIDDEN,
             code: store_code(err),
             message: store_message(err),
+        };
+    }
+    // spec/03 判定顺序第 3 层：GQL 解析失败（core 稳定前缀）→ 400 GQL_PARSE，
+    // message 剥前缀取原文（与 go/node/py 同语义）。
+    if let Some(msg) = err.strip_prefix("ERR_GQL_PARSE:") {
+        return StoreApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "GQL_PARSE".into(),
+            message: Some(msg.to_string()),
         };
     }
     StoreApiError {

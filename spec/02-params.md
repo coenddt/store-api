@@ -14,11 +14,15 @@
 `q` 是 store `query(gql, params)` 的 gql 串中**资源头之后的完整部分**，适配器负责拼上资源头：
 
 ```
-GET /api/user?q=($condition: @c0, $limit: 10) { name, age }
+GET /api/user?q=($condition: @c0, $limit: @l) { name, age }&p.l=10
 ```
 
-适配器拼接为：`user($condition: @c0, $limit: 10) { name, age }`，等价于直接调用
-`store.query('user($condition: @c0, $limit: 10) { name, age }', { c0: {...} })`。
+适配器拼接为：`user($condition: @c0, $limit: @l) { name, age }`，等价于直接调用
+`store.query('user($condition: @c0, $limit: @l) { name, age }', { c0: {...}, l: 10 })`。
+
+> **GQL 参数值一律是 `@name` 命名引用**（core GQL 语法，py-store / nodejs-store 同构），
+> **不接受字面量**——数值、布尔、对象等都经 `p.<name>` 传入后在 params 侧转型（见下节）。
+> 本示例曾误写为 `$limit: 10` 字面量形态（v1 修订更正），照写会被 core 以 `ERR_GQL_PARSE:` 拒绝。
 
 排序、分页、关系展开、聚合等全部走 GQL 自有语法（`$orderby` / `$limit` / `$offset` / 关系子查询 / `$group` 等），本规范不重复定义，以 store 文档（text-to-query / GQL 语法）为准。
 

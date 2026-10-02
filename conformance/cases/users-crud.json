@@ -9,6 +9,7 @@
     { "method": "DELETE", "path": "/api/user/{id}", "useCreatedId": true, "expect": { "status": 200 } },
     { "method": "GET", "path": "/api/user/{id}", "useCreatedId": true, "expect": { "status": 404, "errorCode": "NOT_FOUND" } },
     { "method": "POST", "path": "/api/user", "body": [1, 2], "expect": { "status": 400, "errorCode": "INVALID_BODY" } },
-    { "method": "GET", "path": "/api/user?p.c0={\"age\":", "expect": { "status": 400, "errorCode": "INVALID_PARAM" } }
+    { "method": "GET", "path": "/api/user?p.c0={\"age\":", "expect": { "status": 400, "errorCode": "INVALID_PARAM" } },
+    { "method": "GET", "path": "/api/user?q=($bogus", "expect": { "status": 400, "errorCode": "GQL_PARSE" } }
   ]
 }

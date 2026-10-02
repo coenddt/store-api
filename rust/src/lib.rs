@@ -16,7 +16,7 @@ pub mod adapter;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::extract::{Path, RawQuery, State};
+use axum::extract::{Extension, Path, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -32,16 +32,18 @@ pub type StoreErr = String;
 
 /// 数据层调用面 trait —— rust-store 宿主（`rust_store::Store`）的直接镜像，
 /// 与 nodejs-store / py-store 的 store 实例同构。真实接入实现本 trait 包一层即可。
+///
+/// 上下文为**显式传参**（`ctx: Option<Value>`，对齐宿主的入参模型）：中间件把每请求
+/// 上下文放进 request extensions，handler 取出后随调用传递。禁止在适配层用全局状态
+/// 持有「当前上下文」——并发请求会互相覆盖（spec/04 警告的身份跨请求泄漏）。
 #[async_trait]
 pub trait Store: Send + Sync {
     async fn list(&self) -> Vec<String>;
-    async fn query(&self, gql: &str, params: &Map<String, Value>) -> Result<Vec<Value>, StoreErr>;
-    async fn query_one(&self, gql: &str, params: &Map<String, Value>) -> Result<Option<Value>, StoreErr>;
-    async fn insert(&self, schema: &str, data: &Value) -> Result<Value, StoreErr>;
-    async fn update(&self, schema: &str, condition: &Value, data: &Value) -> Result<Option<Value>, StoreErr>;
-    async fn remove(&self, schema: &str, condition: &Value) -> Result<Value, StoreErr>;
-    /// 每请求上下文注入（spec/04；rust-store 为显式入参模型，宿主实现自行管理当前 ctx）
-    async fn set_context(&self, _ctx: Value) {}
+    async fn query(&self, gql: &str, params: &Map<String, Value>, ctx: Option<Value>) -> Result<Vec<Value>, StoreErr>;
+    async fn query_one(&self, gql: &str, params: &Map<String, Value>, ctx: Option<Value>) -> Result<Option<Value>, StoreErr>;
+    async fn insert(&self, schema: &str, data: &Value, ctx: Option<Value>) -> Result<Value, StoreErr>;
+    async fn update(&self, schema: &str, condition: &Value, data: &Value, ctx: Option<Value>) -> Result<Option<Value>, StoreErr>;
+    async fn remove(&self, schema: &str, condition: &Value, ctx: Option<Value>) -> Result<Value, StoreErr>;
     /// schema 的标量字段名列表（spec/01+02：适配器据此生成显式投影——
     /// GQL 省略投影段 = 只返回 _id。空 Vec = 无投影，data 仅 _id 属上游 schema 定义不完整的显式后果）
     async fn schema_fields(&self, _schema: &str) -> Vec<String> {
@@ -52,6 +54,10 @@ pub trait Store: Send + Sync {
         err.starts_with("ERR_PERMISSION")
     }
 }
+
+/// 每请求上下文载体（request extensions 中转；None = 本请求无上下文）
+#[derive(Clone, Default)]
+pub struct RequestCtx(pub Option<Value>);
 
 /// 归档表过滤（spec/01-routing.md）：`XxxDeleted` 且 `Xxx` 也在列表中 ⇒ 视为归档表。
 pub fn filter_archived(names: Vec<String>) -> Vec<String> {
@@ -109,31 +115,27 @@ pub async fn create_router(store: Arc<dyn Store>, opts: Options) -> Router {
 async fn inject_context(
     State(state): State<AppState>,
     headers: HeaderMap,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let Some(provider) = &state.context_provider else {
-        return next.run(request).await;
-    };
-    match provider(&headers).await {
-        Ok(Some(ctx)) => {
-            state.store.set_context(ctx).await;
-            next.run(request).await
-        }
-        // spec/04：本请求无上下文 ⇒ 显式清除（set_context(null)），由 store 的 requireContext 档位决定是否拒绝。
-        // 有状态持有的运行时禁止残留上一请求上下文（防身份跨请求泄漏）。
-        Ok(None) => {
-            state.store.set_context(Value::Null).await;
-            next.run(request).await
-        }
-        Err(e) => {
-            if state.store.is_permission_error(&e.to_string()) {
-                let mapped = map_store_err(&e, |x| state.store.is_permission_error(&x.to_string()));
-                return mapped.into_response();
+    let ctx = match &state.context_provider {
+        None => None,
+        Some(provider) => match provider(&headers).await {
+            Ok(c) => c,
+            Err(e) => {
+                if state.store.is_permission_error(&e.to_string()) {
+                    let mapped = map_store_err(&e, |x| state.store.is_permission_error(&x.to_string()));
+                    return mapped.into_response();
+                }
+                return StoreApiError::context_error(if e.is_empty() { None } else { Some(e) })
+                    .into_response();
             }
-            StoreApiError::context_error(if e.is_empty() { None } else { Some(e) }).into_response()
-        }
-    }
+        },
+    };
+    // spec/04：ctx 显式随请求传递（None = 本请求无上下文，由 store 的 requireContext
+    // 档位决定是否拒绝）——适配层无全局状态，天然无跨请求身份残留。
+    request.extensions_mut().insert(RequestCtx(ctx));
+    next.run(request).await
 }
 
 fn ok_json(v: Value) -> Response {
@@ -162,6 +164,7 @@ async fn list_resource(
     State(state): State<AppState>,
     Path(resource): Path<String>,
     RawQuery(raw): RawQuery,
+    Extension(rc): Extension<RequestCtx>,
 ) -> Response {
     if let Err(e) = resolve_resource(&state, &resource) {
         return e.into_response();
@@ -179,7 +182,7 @@ async fn list_resource(
     } else {
         format!("{resource}{q}")
     };
-    match state.store.query(&gql, &params).await {
+    match state.store.query(&gql, &params, rc.0).await {
         Ok(rows) => ok_json(json!({ "data": rows })),
         Err(e) => store_err_response(&state, &e),
     }
@@ -205,6 +208,7 @@ fn extract_q(query: &str) -> Option<String> {
 async fn get_one(
     State(state): State<AppState>,
     Path((resource, id)): Path<(String, String)>,
+    Extension(rc): Extension<RequestCtx>,
 ) -> Response {
     if let Err(e) = resolve_resource(&state, &resource) {
         return e.into_response();
@@ -213,7 +217,7 @@ async fn get_one(
     params.insert("c0".into(), json!({ state.id_field.as_ref(): id }));
     let proj = schema_projection(&state, &resource).await;
     let gql = format!("{resource}($condition: @c0){proj}");
-    match state.store.query_one(&gql, &params).await {
+    match state.store.query_one(&gql, &params, rc.0).await {
         Ok(Some(doc)) => ok_json(json!({ "data": doc })),
         Ok(None) => StoreApiError::not_found(format!("记录不存在: {}={}", state.id_field, id))
             .into_response(),
@@ -239,6 +243,7 @@ async fn read_json_body(request: axum::extract::Request) -> Result<Value, StoreA
 async fn create_resource(
     State(state): State<AppState>,
     Path(resource): Path<String>,
+    Extension(rc): Extension<RequestCtx>,
     request: axum::extract::Request,
 ) -> Response {
     if let Err(e) = resolve_resource(&state, &resource) {
@@ -248,7 +253,7 @@ async fn create_resource(
         Ok(b) => b,
         Err(e) => return e.into_response(),
     };
-    match state.store.insert(&resource, &body).await {
+    match state.store.insert(&resource, &body, rc.0).await {
         Ok(created) => (StatusCode::CREATED, Json(json!({ "data": created }))).into_response(),
         Err(e) => store_err_response(&state, &e),
     }
@@ -257,6 +262,7 @@ async fn create_resource(
 async fn update_one(
     State(state): State<AppState>,
     Path((resource, id)): Path<(String, String)>,
+    Extension(rc): Extension<RequestCtx>,
     request: axum::extract::Request,
 ) -> Response {
     if let Err(e) = resolve_resource(&state, &resource) {
@@ -267,7 +273,7 @@ async fn update_one(
         Err(e) => return e.into_response(),
     };
     let condition = json!({ state.id_field.as_ref(): id });
-    match state.store.update(&resource, &condition, &body).await {
+    match state.store.update(&resource, &condition, &body, rc.0).await {
         Ok(Some(doc)) => ok_json(json!({ "data": doc })),
         Ok(None) => ok_json(json!({ "data": Value::Null })),
         Err(e) => store_err_response(&state, &e),
@@ -277,12 +283,13 @@ async fn update_one(
 async fn delete_one(
     State(state): State<AppState>,
     Path((resource, id)): Path<(String, String)>,
+    Extension(rc): Extension<RequestCtx>,
 ) -> Response {
     if let Err(e) = resolve_resource(&state, &resource) {
         return e.into_response();
     }
     let condition = json!({ state.id_field.as_ref(): id });
-    match state.store.remove(&resource, &condition).await {
+    match state.store.remove(&resource, &condition, rc.0).await {
         Ok(out) => ok_json(json!({ "data": out })),
         Err(e) => store_err_response(&state, &e),
     }

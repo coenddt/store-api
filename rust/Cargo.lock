@@ -1043,7 +1043,6 @@ dependencies = [
 [[package]]
 name = "rust-store"
 version = "0.1.0"
-source = "git+https://gitee.com/coenddt/rust-store.git#2b879108be7ae6602d5b7409533dba275c78e8fc"
 dependencies = [
  "rust-store-core",
  "serde_json",
@@ -1054,7 +1053,6 @@ dependencies = [
 [[package]]
 name = "rust-store-core"
 version = "2.6.0"
-source = "git+https://gitee.com/coenddt/rust-store.git#2b879108be7ae6602d5b7409533dba275c78e8fc"
 dependencies = [
  "serde_json",
  "thiserror",
@@ -1426,6 +1424,7 @@ dependencies = [
  "http-body-util",
  "rust-store",
  "rust-store-core",
+ "serde",
  "serde_json",
  "sqlx",
  "tokio",

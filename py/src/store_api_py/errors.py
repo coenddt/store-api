@@ -53,4 +53,10 @@ def map_error(err: BaseException, permission_error: type[BaseException] | None) 
     if permission_error is not None and isinstance(err, permission_error):
         # 按类型判定，禁按 message 匹配
         return StoreApiError(403, store_code(err), str(err) or None)
-    return StoreApiError(500, store_code(err), str(err) or None)
+    # spec/03 判定顺序第 3 层：GQL 解析失败（core 稳定前缀 ERR_GQL_PARSE:，与
+    # ERR_PERM_PREFIX 同构的类型级契约——前缀判定非文案脆弱匹配）→ 400 GQL_PARSE，
+    # message 剥前缀取原文（与 go/rust/node 同语义）。
+    text = str(err)
+    if text.startswith("ERR_GQL_PARSE:"):
+        return StoreApiError(400, "GQL_PARSE", text[len("ERR_GQL_PARSE:"):])
+    return StoreApiError(500, store_code(err), text or None)

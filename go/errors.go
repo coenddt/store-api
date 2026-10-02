@@ -24,6 +24,7 @@ func invalidBody(msg string) error      { return &adapterError{"INVALID_BODY", m
 func invalidParam(msg string) error     { return &adapterError{"INVALID_PARAM", msg, http.StatusBadRequest} }
 func notFound(msg string) error         { return &adapterError{"NOT_FOUND", msg, http.StatusNotFound} }
 
+
 // mapContextError 分类 provider 错误（spec/04）：
 // PermissionError ⇒ 403（RBAC 拒绝，与业务权限拒绝同一语义）；其余 ⇒ 401 CONTEXT_ERROR。
 // go-store 的 PermissionError 判定按 core 的稳定前缀 ERR_PERMISSION:（core command/mod.rs：
@@ -42,6 +43,19 @@ func mapContextError(err error) error {
 // isPermissionError 按稳定前缀判定（core ERR_PERM_PREFIX 契约），禁按文案匹配。
 func isPermissionError(err error) bool {
 	return err != nil && strings.HasPrefix(err.Error(), "ERR_PERMISSION:")
+}
+
+// gqlParsePrefix GQL 解析失败的稳定前缀（core pipeline/parse.rs；spec/03 v1 修订：
+// 与 ERR_PERM_PREFIX 同构的类型级契约，四端按前缀判定 → 400 GQL_PARSE）。
+const gqlParsePrefix = "ERR_GQL_PARSE:"
+
+func isGqlParseError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), gqlParsePrefix)
+}
+
+// gqlParseMessage 剥离稳定前缀取 core 原文。
+func gqlParseMessage(err error) string {
+	return strings.TrimPrefix(err.Error(), gqlParsePrefix)
 }
 
 // permCode 权限错误码：剥离稳定前缀取语义段（如 "无写入权限"），保证 code 非空可判。
@@ -77,6 +91,9 @@ func writeError(w http.ResponseWriter, err error) {
 		status, code, message = ae.Status, ae.Code, ae.Message
 	} else if isPermissionError(err) {
 		status, code, message = http.StatusForbidden, permCode(err), err.Error()
+	} else if isGqlParseError(err) {
+		// spec/03 判定顺序第 3 层：GQL 解析失败 → 400 GQL_PARSE（message 剥前缀取原文）
+		status, code, message = http.StatusBadRequest, "GQL_PARSE", gqlParseMessage(err)
 	} else {
 		// 其余 store 错误（数据库、连接、方言等）500 透传；message 为空时显式 null
 		status, code = http.StatusInternalServerError, "STORE_ERROR"

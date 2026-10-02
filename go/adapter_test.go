@@ -145,18 +145,16 @@ func TestRESTFullCRUD(t *testing.T) {
 		t.Fatalf("DELETE 计数: %v", data)
 	}
 
-	// GQL 解析失败：spec/03 表格写 400，但 node/py 适配器实现中无 code 的 store
-	// 错误统一 500（errors.js mapError 无 parse 判定分支）——spec 与实现存在既有缺口。
-	// Go 版与 node 行为保持一致（多端 parity 优先）：500 + store 原始 message 透传。
+	// GQL 解析失败 → 400 GQL_PARSE（spec/03 v1 修订已四端落地：core ERR_GQL_PARSE 稳定前缀）
 	badQuery := url.Values{}
 	badQuery.Set("q", "($bogus")
 	code, body = doJSON(t, "GET", srv.URL+"/api/order?"+badQuery.Encode(), "")
-	if code != 500 {
-		t.Fatalf("GQL 错误应与 node 一致取 500, got %d: %v", code, body)
+	if code != 400 {
+		t.Fatalf("GQL 解析失败应 400, got %d: %v", code, body)
 	}
 	errObj, ok := body["error"].(map[string]any)
-	if !ok || errObj["message"] == nil {
-		t.Fatalf("错误形态缺失 error 对象/message: %v", body)
+	if !ok || errObj["code"] != "GQL_PARSE" || errObj["message"] == nil {
+		t.Fatalf("应为 GQL_PARSE + 原文: %v", body)
 	}
 }
 

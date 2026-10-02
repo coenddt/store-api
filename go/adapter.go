@@ -74,6 +74,14 @@ func New(mux *http.ServeMux, st *gostore.Store, opts Options) error {
 		names = FilterArchived(list)
 	}
 
+	// 投影段缓存（spec/01+02：投影取自 schema 的 fields 键列表；fields 为空时省略投影段）
+	projections := make(map[string]string, len(names))
+	for _, name := range names {
+		if keys := st.SchemaFieldsKeys(name); len(keys) > 0 {
+			projections[name] = " { " + strings.Join(keys, ", ") + " }"
+		}
+	}
+
 	for _, name := range names {
 		collection := name
 		idField := opts.IDField
@@ -81,7 +89,9 @@ func New(mux *http.ServeMux, st *gostore.Store, opts Options) error {
 
 		handler := func(serve func(w http.ResponseWriter, r *http.Request, ctx *gostore.Context)) http.HandlerFunc {
 			return func(w http.ResponseWriter, r *http.Request) {
-				// spec/04：provider 错误优先分类（403/401），之后业务错误走各自映射
+				// spec/04：provider 错误优先分类（403/401），之后业务错误走各自映射。
+				// （资源防御无需显式守卫：本适配器按已知资源注册具体路由，未注册名
+				// 天然 404——与 rust 版通配路由 {resource} 需 RESOURCE_NOT_FOUND 守卫的形态不同。）
 				ctx := (*gostore.Context)(nil)
 				if opts.ContextProvider != nil {
 					c, err := opts.ContextProvider(r)
@@ -102,7 +112,11 @@ func New(mux *http.ServeMux, st *gostore.Store, opts Options) error {
 				writeError(w, err)
 				return
 			}
+			// spec/01+02：q 缺失 → 全字段投影（省略投影 = 只回 _id）；q 存在 → 投影由 q 决定
 			gql := collection + r.URL.Query().Get("q")
+			if r.URL.Query().Get("q") == "" {
+				gql = collection + projections[collection]
+			}
 			rows, err := st.Query(r.Context(), gql, params, ctx)
 			if err != nil {
 				writeError(w, err)

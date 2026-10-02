@@ -38,13 +38,15 @@ impl Store for MockStore {
         }
     }
 
-    async fn query(&self, gql: &str, params: &Map<String, Value>) -> Result<Vec<Value>, StoreErr> {
+    async fn query(&self, gql: &str, params: &Map<String, Value>, ctx: Option<Value>) -> Result<Vec<Value>, StoreErr> {
         *self.last_query.lock().unwrap() = Some((gql.to_string(), Value::Object(params.clone())));
+        *self.last_context.lock().unwrap() = ctx;
         Ok(self.rows.lock().unwrap().clone())
     }
 
-    async fn query_one(&self, gql: &str, params: &Map<String, Value>) -> Result<Option<Value>, StoreErr> {
+    async fn query_one(&self, gql: &str, params: &Map<String, Value>, ctx: Option<Value>) -> Result<Option<Value>, StoreErr> {
         *self.last_query.lock().unwrap() = Some((gql.to_string(), Value::Object(params.clone())));
+        *self.last_context.lock().unwrap() = ctx;
         let id = params.get("c0").and_then(|c| c.get("_id")).and_then(|v| v.as_str());
         Ok(self
             .rows
@@ -55,7 +57,7 @@ impl Store for MockStore {
             .cloned())
     }
 
-    async fn insert(&self, _schema: &str, data: &Value) -> Result<Value, StoreErr> {
+    async fn insert(&self, _schema: &str, data: &Value, _ctx: Option<Value>) -> Result<Value, StoreErr> {
         let mut rows = self.rows.lock().unwrap();
         let mut row = data.clone();
         if row.get("_id").is_none() {
@@ -68,7 +70,7 @@ impl Store for MockStore {
         Ok(row)
     }
 
-    async fn update(&self, _schema: &str, condition: &Value, data: &Value) -> Result<Option<Value>, StoreErr> {
+    async fn update(&self, _schema: &str, condition: &Value, data: &Value, _ctx: Option<Value>) -> Result<Option<Value>, StoreErr> {
         let id = condition["_id"].as_str().unwrap_or_default();
         let mut rows = self.rows.lock().unwrap();
         match rows.iter_mut().find(|r| r["_id"].as_str() == Some(id)) {
@@ -84,16 +86,12 @@ impl Store for MockStore {
         }
     }
 
-    async fn remove(&self, _schema: &str, condition: &Value) -> Result<Value, StoreErr> {
+    async fn remove(&self, _schema: &str, condition: &Value, _ctx: Option<Value>) -> Result<Value, StoreErr> {
         let id = condition["_id"].as_str().unwrap_or_default().to_string();
         let mut rows = self.rows.lock().unwrap();
         let before = rows.len();
         rows.retain(|r| r["_id"].as_str() != Some(&id));
         Ok(json!({ "deletedCount": before - rows.len(), "archivedCount": 1 }))
-    }
-
-    async fn set_context(&self, ctx: Value) {
-        *self.last_context.lock().unwrap() = Some(ctx);
     }
 
     fn is_permission_error(&self, err: &StoreErr) -> bool {

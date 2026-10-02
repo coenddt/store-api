@@ -11,7 +11,11 @@ path = "src/lib.rs"
 
 [features]
 # 开箱桥接：rust-store 宿主（rust_store::Store）→ 本 crate 的 Store trait。
-# 依赖走 git（宿主尚未发 crates.io；发布后改为版本依赖）。
+# 默认开启：`cargo test` 无需记忆 --features（e2e/conformance 默认全跑）；
+# `--no-default-features` 供验证纯库形态（mock smoke）。注意：发布 crates.io 前须
+# 重新决策 default（git 依赖不宜作为库的默认 feature；届时改为版本依赖再评估）。
+# 开发期依赖经 [patch] 段指向本机仓库。
+default = ["rust-store"]
 rust-store = ["dep:rust-store", "dep:rust-store-core"]
 
 [dependencies]
@@ -28,8 +32,14 @@ rust-store-core = { git = "https://gitee.com/coenddt/rust-store.git", optional =
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde = { version = "1", features = ["derive"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 http = "1"
 # 桥接 e2e：直查 SQLite 验证归档表与 DDL（与 rust-store 宿主同版本线）
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+
+# 开发期：git 依赖 patch 到本机仓库（本地领先远端；发布时移除本段恢复 git/版本依赖）
+[patch."https://gitee.com/coenddt/rust-store.git"]
+rust-store = { path = "../../rust-store/host" }
+rust-store-core = { path = "../../rust-store/core" }

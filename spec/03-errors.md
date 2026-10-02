@@ -21,7 +21,12 @@ HTTP 4xx/5xx
 | 单条查询 `queryOne` 返回空 | 404 | `NOT_FOUND` |
 | 请求体缺失 / 非 JSON 对象 | 400 | `INVALID_BODY` |
 | `p.*` 值非法（JSON 解析失败） | 400 | `INVALID_PARAM` |
-| GQL 解析失败（store 抛出） | 400 | store 原始 code/name |
+| GQL 解析失败（store 抛出，core 稳定前缀 `ERR_GQL_PARSE:`） | 400 | `GQL_PARSE` |
+
+> 判定依据（v1 修订）：core 的 GQL 解析错误（tokenizer/parser/参数表达拒绝）统一携带
+> `ERR_GQL_PARSE:` 稳定前缀——与 `ERR_PERM_PREFIX` 同构的类型级契约，四端按**前缀**判定
+>（构造后剥离，不对中文文案做脆弱匹配）。响应 `code` 统一取 `GQL_PARSE`，`message` 为
+> core 原文（剥离前缀后的完整文案）。
 | store `PermissionError`（RBAC 拒绝） | 403 | store 原始 code/name |
 | 其余 store 抛出的错误（数据库、连接、方言等） | 500 | store 原始 code/name |
 
@@ -29,8 +34,9 @@ HTTP 4xx/5xx
 
 1. 适配层自身守卫（body / param 合法性）→ 400
 2. `store.PermissionError`（按错误类型判定，**不**按 message 字符串匹配）→ 403
-3. `queryOne` 空结果 → 404
-4. 其余一律 500 透传
+3. GQL 解析失败（core 稳定前缀 `ERR_GQL_PARSE:`）→ 400 `GQL_PARSE`
+4. `queryOne` 空结果 → 404
+5. 其余一律 500 透传
 
 ## 禁止事项（对照 no-error-masking）
 

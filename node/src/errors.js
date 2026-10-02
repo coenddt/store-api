@@ -43,6 +43,12 @@ function mapError(err, PermissionErrorClass) {
   if (PermissionErrorClass && err instanceof PermissionErrorClass) {
     return { statusCode: 403, body: errorPayload(storeCode(err), err.message) };
   }
+  // spec/03 判定顺序第 3 层：GQL 解析失败（core 稳定前缀 ERR_GQL_PARSE:，与
+  // ERR_PERM_PREFIX 同构的类型级契约——前缀判定非文案脆弱匹配）→ 400 GQL_PARSE，
+  // message 剥前缀取原文（与 go/rust/py 同语义）。
+  if (err && typeof err.message === 'string' && err.message.startsWith('ERR_GQL_PARSE:')) {
+    return { statusCode: 400, body: errorPayload('GQL_PARSE', err.message.slice('ERR_GQL_PARSE:'.length)) };
+  }
   return { statusCode: 500, body: errorPayload(storeCode(err), err ? err.message : null) };
 }
 
