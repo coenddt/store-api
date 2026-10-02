@@ -6,7 +6,7 @@ store 的 RBAC 以请求上下文为基准（`store.setContext(ctx)` / `store.se
 
 | 选项 | 类型 | 语义 |
 |---|---|---|
-| `contextProvider` | `(req) => ctx \| Promise<ctx>`（Node）/ `(request) => ctx \| awaitable`（Python） | 每请求调用；返回值作为本请求的 store 上下文。返回 `null`/`undefined` 时必须**显式注入空上下文**（Rust 适配器 `set_context(null)` 语义为清除；有状态持有的运行时禁止残留上一请求上下文，防身份跨请求泄漏），由 store 自身的 `requireContext` 档位决定是否拒绝。 |
+| `contextProvider` | `(req) => ctx \| Promise<ctx>`（Node）/ `(request) => ctx \| awaitable`（Python） | 每请求调用；返回值作为本请求的 store 上下文。**有状态持有的端（node / py / go）**返回 `null`/`undefined` 时必须**显式注入空上下文**（即 `setContext(null)` / `set_context(None)` 落地清除，禁止残留上一请求上下文，防身份跨请求泄漏）；**Rust 适配器为请求级注入**——ctx 随 `request.extensions` 传递、无全局状态，不涉及清除。是否拒绝由 store 自身的 `requireContext` 档位决定。 |
 
 ## 行为
 
