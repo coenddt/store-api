@@ -174,3 +174,19 @@ test('store 异常透传为 500 且保留 code/message', async () => {
   assert.equal(res.json().error.code, 'CONN_TIMEOUT');
   assert.equal(res.json().error.message, '连接超时');
 });
+
+test('x-cache 注记位（B6）：无 provider 恒 BYPASS（含错误响应）；provider=HIT 透传', async () => {
+  const store = new MockStore();
+  const app = await buildApp(store);
+
+  const ok = await app.inject({ method: 'GET', url: '/api/user' });
+  assert.equal(ok.headers['x-cache'], 'BYPASS');
+
+  const missing = await app.inject({ method: 'GET', url: '/api/user/nope' });
+  assert.equal(missing.statusCode, 404);
+  assert.equal(missing.headers['x-cache'], 'BYPASS'); // 错误响应同样带注记
+
+  store.cacheStatus = () => 'HIT';
+  const hit = await app.inject({ method: 'GET', url: '/api/user' });
+  assert.equal(hit.headers['x-cache'], 'HIT');
+});

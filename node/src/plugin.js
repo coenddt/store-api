@@ -81,6 +81,15 @@ async function storeApiPlugin(fastify, opts) {
     return mapped.body;
   });
 
+  // B6：`x-cache` 响应头注记位——取值唯一来源为宿主 store.cacheStatus（未实现时恒 BYPASS）。
+  // 覆盖所有响应（含错误响应）。非法值回落 BYPASS（宿主侧已对非法/异常走反馈通道留痕）。
+  const CACHE_VALUES = ['HIT', 'MISS', 'BYPASS'];
+  fastify.addHook('onSend', async (req, reply, payload) => {
+    const v = typeof store.cacheStatus === 'function' ? store.cacheStatus() : 'BYPASS';
+    reply.header('x-cache', CACHE_VALUES.includes(v) ? v : 'BYPASS');
+    return payload;
+  });
+
   function requireBody(body) {
     if (body == null || typeof body !== 'object' || Array.isArray(body)) {
       throw invalidBody('请求体必须是 JSON 对象');

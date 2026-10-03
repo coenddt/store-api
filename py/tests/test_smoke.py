@@ -206,3 +206,20 @@ def test_store_error_passthrough_500():
 
 def test_fastapi_instance():
     assert isinstance(build_app(MockStore()), FastAPI)
+
+
+def test_x_cache_header():
+    """x-cache 注记位（B6）：无 provider 恒 BYPASS（含错误响应）；provider=HIT 透传"""
+    store = MockStore()
+    client = TestClient(build_app(store))
+
+    ok = client.get("/api/user")
+    assert ok.headers["x-cache"] == "BYPASS"
+
+    missing = client.get("/api/user/nope")
+    assert missing.status_code == 404
+    assert missing.headers["x-cache"] == "BYPASS"  # 错误响应同样带注记
+
+    store.cache_status = lambda: "HIT"
+    hit = client.get("/api/user")
+    assert hit.headers["x-cache"] == "HIT"

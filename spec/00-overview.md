@@ -2,7 +2,7 @@
 
 ## 定位
 
-store-api 是 common-store 数据层家族之上的 **HTTP 适配层**，不是新的数据层，也不做认证、限流、缓存等任何超出「HTTP ↔ store 调用翻译」的事。
+store-api 是 common-store 数据层家族之上的 **HTTP 适配层**，不是新的数据层，也不做认证、限流、缓存**实现**等任何超出「HTTP ↔ store 调用翻译」的事（`x-cache` 仅为宿主缓存状态注记，见 `05-response-headers.md`）。
 
 ## 分层
 

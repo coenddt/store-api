@@ -80,6 +80,18 @@ def create_app(
             store.set_context(ctx)
             return await call_next(request)
 
+    # B6：`x-cache` 响应头注记位——取值唯一来源为宿主 store.cache_status（未实现时恒 BYPASS）；
+    # 覆盖所有响应（含错误响应）。非法值回落 BYPASS（宿主侧已对非法/异常走反馈通道留痕）。
+    _CACHE_VALUES = ("HIT", "MISS", "BYPASS")
+
+    @app.middleware("http")
+    async def _annotate_cache(request: Request, call_next):
+        response = await call_next(request)
+        fn = getattr(store, "cache_status", None)
+        v = fn() if callable(fn) else "BYPASS"
+        response.headers["x-cache"] = v if v in _CACHE_VALUES else "BYPASS"
+        return response
+
     names = resources if resources is not None else filter_archived(store.list())
     for name in names:
         # 显式投影（spec/01+02）：GQL 省略投影段 = 只返回 _id（三端 core 契约）。
