@@ -50,6 +50,8 @@ async function storeApiPlugin(fastify, opts) {
     contextProvider = null,
     resources = null,
     errors = null,
+    fileField = 'file',
+    fileResolver = null,
   } = opts;
   if (!store) throw new Error('storeApiPlugin 需要 opts.store（nodejs-store 的 store 实例）');
   // 权限错误类来源（双端一致）：显式 errors.PermissionError → store 实例属性 → 加载 nodejs-store
@@ -125,6 +127,22 @@ async function storeApiPlugin(fastify, opts) {
       const data = await store.queryOne(`${name}($condition: @c0)${proj}`, oneParams(req.params.id));
       if (data == null) throw notFound(`记录不存在: ${idField}=${req.params.id}`);
       return { data };
+    });
+
+    fastify.get(`${base}/:id/file`, async (req, reply) => {
+      const rec = await store.queryOne(
+        `${name}($condition: @c0)${proj}`,
+        { c0: { [idField]: req.params.id } },
+      );
+      if (rec == null) throw notFound(`记录不存在: ${idField}=${req.params.id}`);
+      const raw = rec[fileField];
+      if (raw == null) throw notFound(`文件不存在: ${fileField}=${req.params.id}`);
+      const out = fileResolver
+        ? await fileResolver(req, rec, req.params.id)
+        : { body: String(raw), contentType: 'text/plain; charset=utf-8', fileName: `${name}-${req.params.id}` };
+      reply.header('content-type', out.contentType || 'application/octet-stream');
+      reply.header('content-disposition', `attachment; filename="${out.fileName || 'file'}"`);
+      return out.body;
     });
 
     fastify.post(base, async (req, reply) => {
