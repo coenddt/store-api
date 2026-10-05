@@ -223,3 +223,23 @@ def test_x_cache_header():
     store.cache_status = lambda: "HIT"
     hit = client.get("/api/user")
     assert hit.headers["x-cache"] == "HIT"
+
+
+def test_file_download_route():
+    """文件下载路由：200 + 头；记录/字段缺失 → 404（spec/01+03+05）"""
+    store = MockStore()
+    client = TestClient(build_app(store))
+
+    created = client.post("/api/user", json={"name": "a", "age": 1})
+    rid = created.json()["data"]["_id"]
+    store.rows[rid]["file"] = "hello"
+
+    file = client.get(f"/api/user/{rid}/file")
+    assert file.status_code == 200
+    assert file.headers["content-type"] == "text/plain; charset=utf-8"
+    assert file.headers["content-disposition"] == f'attachment; filename="user-{rid}"'
+    assert file.content == b"hello"
+
+    missing = client.get("/api/user/nope/file")
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "NOT_FOUND"

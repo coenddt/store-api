@@ -190,3 +190,22 @@ test('x-cache 注记位（B6）：无 provider 恒 BYPASS（含错误响应）�
   const hit = await app.inject({ method: 'GET', url: '/api/user' });
   assert.equal(hit.headers['x-cache'], 'HIT');
 });
+
+test('文件下载路由：200 + 头；记录/字段缺失 → 404（spec/01+03+05）', async () => {
+  const store = new MockStore();
+  const app = await buildApp(store);
+
+  const created = await app.inject({ method: 'POST', url: '/api/user', payload: { name: 'a', age: 1 } });
+  const id = created.json().data._id;
+  store.rows.get(id).file = 'hello';
+
+  const file = await app.inject({ method: 'GET', url: `/api/user/${id}/file` });
+  assert.equal(file.statusCode, 200);
+  assert.equal(file.headers['content-type'], 'text/plain; charset=utf-8');
+  assert.equal(file.headers['content-disposition'], `attachment; filename="user-${id}"`);
+  assert.equal(file.body, 'hello');
+
+  const missing = await app.inject({ method: 'GET', url: '/api/user/nope/file' });
+  assert.equal(missing.statusCode, 404);
+  assert.equal(missing.json().error.code, 'NOT_FOUND');
+});
