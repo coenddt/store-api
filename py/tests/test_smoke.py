@@ -20,6 +20,19 @@ class MockPermissionError(Exception):
     pass
 
 
+def _apply_set(row: dict, path: str, value):
+    """模拟 store $set 的点路径写入语义：'images.full' → row['images']['full']（Mongo $set {'a.b': v} 即嵌套写）。"""
+    if path.startswith("$"):
+        return  # 原生操作符（$inc/$unset 等）本 mock 不模拟
+    segs = path.split(".")
+    cur = row
+    for s in segs[:-1]:
+        if not isinstance(cur.get(s), dict):
+            cur[s] = {}
+        cur = cur[s]
+    cur[segs[-1]] = value
+
+
 class MockStore:
     """mock store：只实现适配器调用面（query/query_one/insert/update/remove/list/set_context）。"""
 
@@ -59,7 +72,10 @@ class MockStore:
     async def update(self, name, cond, data):
         row = self.rows.get(cond.get("_id"))
         if row:
-            row.update(data)
+            # 模拟 store 的 $set 语义：非 `$` 前缀键自动包 $set（py-store/src/py_store/crud/write.py），
+            # 键内点路径由后端寻址（Mongo $set {'a.b': v} 即嵌套写入）。
+            for k, v in data.items():
+                _apply_set(row, k, v)
         return row
 
     async def remove(self, name, cond):
@@ -226,14 +242,22 @@ def test_x_cache_header():
 
 
 def test_file_download_route():
-    """文件下载路由：200 + 头；记录/字段缺失 → 404（spec/01+03+05）"""
+    """文件下载路由：注入 resolver → 200 + 头；未注入 → 501；缺失 → 404（spec/01+03+05）"""
     store = MockStore()
-    client = TestClient(build_app(store))
 
-    created = client.post("/api/user", json={"name": "a", "age": 1})
-    rid = created.json()["data"]["_id"]
+    # 未注入 file_resolver → 501 FILE_NOT_CONFIGURED（决策 D，原 text/plain 兜底已废止）
+    bare = TestClient(build_app(store))
+    rid = bare.post("/api/user", json={"name": "a", "age": 1}).json()["data"]["_id"]
     store.rows[rid]["file"] = "hello"
+    not_configured = bare.get(f"/api/user/{rid}/file")
+    assert not_configured.status_code == 501
+    assert not_configured.json()["error"]["code"] == "FILE_NOT_CONFIGURED"
 
+    # 注入 resolver → 200
+    async def _fr(request, rec, i):
+        return {"body": b"hello", "contentType": "text/plain; charset=utf-8", "fileName": f"user-{i}"}
+
+    client = TestClient(build_app(store, file_resolver=_fr))
     file = client.get(f"/api/user/{rid}/file")
     assert file.status_code == 200
     assert file.headers["content-type"] == "text/plain; charset=utf-8"
@@ -241,5 +265,49 @@ def test_file_download_route():
     assert file.content == b"hello"
 
     missing = client.get("/api/user/nope/file")
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_upload_route_and_field():
+    """上传路由：未注入 → 501；注入 → 200 回写；空体 → 400；超限 → 413；field 点路径（spec/01+02+03）"""
+    store = MockStore()
+    bare = TestClient(build_app(store))
+    rid = bare.post("/api/user", json={"name": "a", "age": 1}).json()["data"]["_id"]
+
+    nc = bare.post(f"/api/user/{rid}/file", content=b"bytes",
+                   headers={"content-type": "application/octet-stream"})
+    assert nc.status_code == 501
+    assert nc.json()["error"]["code"] == "UPLOAD_NOT_CONFIGURED"
+
+    async def _ur(request, rec, i):
+        return {"ref": "sha1abc"}
+
+    client = TestClient(build_app(store, upload_resolver=_ur))
+    ok = client.post(f"/api/user/{rid}/file", content=b"bytes",
+                     headers={"content-type": "application/octet-stream"})
+    assert ok.status_code == 200
+    assert ok.json()["data"]["file"] == "sha1abc"
+
+    empty = client.post(f"/api/user/{rid}/file", content=b"",
+                        headers={"content-type": "application/octet-stream"})
+    assert empty.status_code == 400
+    assert empty.json()["error"]["code"] == "EMPTY_BODY"
+
+    # 超限 → 413 UPLOAD_TOO_LARGE（A4 parity；用小 upload_limit 触发，避免构造 32MB 大包）
+    small = TestClient(build_app(store, upload_resolver=_ur, upload_limit=4))
+    too_large = small.post(f"/api/user/{rid}/file", content=b"bytes",
+                           headers={"content-type": "application/octet-stream"})
+    assert too_large.status_code == 413
+    assert too_large.json()["error"]["code"] == "UPLOAD_TOO_LARGE"
+
+    store.rows[rid]["images"] = {"full": "old-ref"}
+    ok2 = client.post(f"/api/user/{rid}/file?field=images.full", content=b"bytes",
+                      headers={"content-type": "application/octet-stream"})
+    assert ok2.status_code == 200
+    assert ok2.json()["data"]["images"]["full"] == "sha1abc"
+
+    missing = client.post("/api/user/nope/file", content=b"bytes",
+                          headers={"content-type": "application/octet-stream"})
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "NOT_FOUND"

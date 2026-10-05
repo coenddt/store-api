@@ -16,10 +16,14 @@ from fastapi.responses import JSONResponse, Response
 from .errors import (
     StoreApiError,
     context_error,
+    empty_body,
     error_payload,
+    file_not_configured,
     invalid_body,
     map_error,
     not_found,
+    too_large,
+    upload_not_configured,
 )
 from .params import parse_query_params
 
@@ -51,6 +55,8 @@ def create_app(
     permission_error: type[BaseException] | None = None,
     file_field: str = "file",
     file_resolver: Callable[[Request, dict, str], Any] | None = None,
+    upload_resolver: Callable[[Request, dict, str], Any] | None = None,
+    upload_limit: int = 32 * 1024 * 1024,
 ) -> FastAPI:
     """为 store（py-store 的 store 实例，需已 init + register）生成 RESTful FastAPI 应用。
 
@@ -59,6 +65,9 @@ def create_app(
     - context_provider: 每请求上下文钩子（spec/04-context.md）；非权限类抛错 ⇒ 401 CONTEXT_ERROR
     - resources: 显式资源名；缺省取 store.list() 并过滤归档表
     - permission_error: store 权限错误类；缺省取 store.PermissionError
+    - file_resolver: 下载字节接缝 (request, rec, rid) => {body, contentType, fileName}；缺省时下载 501
+    - upload_resolver: 上传字节接缝 (request, rec, rid) => {ref}；缺省时上传 501
+    - upload_limit: 上传字节体上限（超限 413），默认 32MB
     """
     app = FastAPI(title="store-api")
     if permission_error is None:
@@ -99,7 +108,10 @@ def create_app(
         # 显式投影（spec/01+02）：GQL 省略投影段 = 只返回 _id（三端 core 契约）。
         # 列表路由仅在 q 缺失时用它；q 存在时投影完全由 q 决定，适配层不追加。
         proj = _schema_projection(store, name)
-        _register_resource(app, store, name, prefix, id_field, permission_error, proj, file_field, file_resolver)
+        _register_resource(
+            app, store, name, prefix, id_field, permission_error, proj,
+            file_field, file_resolver, upload_resolver, upload_limit,
+        )
 
     return app
 
@@ -147,6 +159,42 @@ def _guard(permission_error: type[BaseException] | None) -> Callable:
     return deco
 
 
+def _pick_field(rec: dict | None, field_path: str) -> Any:
+    """点路径取字段（决策 C）：'images.full' → rec['images']['full']；任一段缺失 → None。"""
+    if rec is None:
+        return None
+    cur: Any = rec
+    for seg in field_path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(seg)
+        if cur is None:
+            return None
+    return cur
+
+
+async def _read_upload_body(request: Request, upload_limit: int) -> bytes:
+    """上传字节体（决策 B'）：空体 → 400 EMPTY_BODY；超限 → 413 UPLOAD_TOO_LARGE。
+
+    FastAPI/starlette 无 Fastify 式 parser/bodyLimit，故 upload_limit 是 py 端唯一防线。
+    """
+    body = await request.body()
+    if not body:
+        raise empty_body(f"上传请求体为空: {request.method} {request.url.path}")
+    if len(body) > upload_limit:
+        raise too_large(f"上传字节体 {len(body)} 字节超过上限 {upload_limit}")
+    return body
+
+
+def _set_by_path(field_path: str, value: Any) -> dict:
+    """上传回写的 set 体：字面键，交由 store 寻址。
+
+    store 对非 `$` 前缀键自动包 `$set`（py-store/src/py_store/crud/write.py），
+    点路径键 `$set {'a.b': v}` 即嵌套写入 —— 与 node 端同策略（parity）。
+    """
+    return {field_path: value}
+
+
 def _register_resource(
     app: FastAPI,
     store: Any,
@@ -157,10 +205,17 @@ def _register_resource(
     proj: str,
     file_field: str,
     file_resolver: Callable[[Request, dict, str], Any] | None,
+    upload_resolver: Callable[[Request, dict, str], Any] | None,
+    upload_limit: int,
 ) -> None:
     # 工厂函数隔离闭包：handler 签名只含 Request 与路径参数，
     # 否则 FastAPI 会把捕获变量解析成查询参数（缺参即 422）
     base = f"{prefix}/{name}"
+
+    def _field_path(request: Request) -> str:
+        # 请求级字段路径：?field= 优先，缺省回落插件级 file_field（spec/02-params.md）
+        f = request.query_params.get("field")
+        return f if f else file_field
 
     @app.get(base)
     @_guard(permission_error)
@@ -181,23 +236,48 @@ def _register_resource(
     @app.get(base + "/{rid}/file")
     @_guard(permission_error)
     async def get_file(rid: str, request: Request):
+        # spec/03 判定顺序第 1 层：未注入 file_resolver → 501（先于 query_one 判定）
+        if file_resolver is None:
+            raise file_not_configured(f"GET {base}/{{rid}}/file 未注入 file_resolver")
+        fp = _field_path(request)
         rec = await store.query_one(f"{name}($condition: @c0){proj}", {"c0": {id_field: rid}})
         if rec is None:
             raise not_found(f"记录不存在: {id_field}={rid}")
-        raw = rec.get(file_field)
+        raw = _pick_field(rec, fp)
         if raw is None:
-            raise not_found(f"文件不存在: {file_field}={rid}")
-        if file_resolver is not None:
-            out = file_resolver(request, rec, rid)
-            if inspect.isawaitable(out):
-                out = await out
-        else:
-            out = {"body": str(raw), "contentType": "text/plain; charset=utf-8", "fileName": f"{name}-{rid}"}
+            raise not_found(f"文件不存在: {fp}={rid}")
+        out = file_resolver(request, rec, rid)
+        if inspect.isawaitable(out):
+            out = await out
         return Response(
             content=out["body"],
             media_type=out.get("contentType", "application/octet-stream"),
             headers={"content-disposition": f'attachment; filename="{out.get("fileName", "file")}"'},
         )
+
+    @app.post(base + "/{rid}/file")
+    @_guard(permission_error)
+    async def upload_file(rid: str, request: Request):
+        # spec/03 判定顺序第 1 层：未注入 upload_resolver → 501
+        if upload_resolver is None:
+            raise upload_not_configured(f"POST {base}/{{rid}}/file 未注入 upload_resolver")
+        await _read_upload_body(request, upload_limit)  # 空体 400 / 超限 413
+        fp = _field_path(request)
+        rec = await store.query_one(f"{name}($condition: @c0){proj}", {"c0": {id_field: rid}})
+        if rec is None:
+            raise not_found(f"记录不存在: {id_field}={rid}")
+        # 接缝：resolver 负责字节落库并返回引用（决策 B：与 file_resolver 对称）
+        out = upload_resolver(request, rec, rid)
+        if inspect.isawaitable(out):
+            out = await out
+        ref = out.get("ref") if isinstance(out, dict) else None
+        if ref is None:
+            raise RuntimeError(  # → map_error 末层 500 原样透传（禁静默）
+                f"upload_resolver 未返回 ref: {name}({id_field}={rid})"
+            )
+        # 回写：走 update 语义 → RBAC 写权限自动生效（决策 A）
+        data = await store.update(name, {id_field: rid}, _set_by_path(fp, ref))
+        return {"data": data}
 
     @app.post(base, status_code=201)
     @_guard(permission_error)

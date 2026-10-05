@@ -38,13 +38,31 @@ def not_found(message: str) -> StoreApiError:
     return StoreApiError(404, "NOT_FOUND", message)
 
 
+# ── 资源字节上传/下载守卫工厂（spec/03-errors.md） ──
+def empty_body(message: str | None = None) -> StoreApiError:
+    return StoreApiError(400, "EMPTY_BODY", message or "上传请求体为空")
+
+
+def too_large(message: str | None = None) -> StoreApiError:
+    return StoreApiError(413, "UPLOAD_TOO_LARGE", message or "上传字节体超过上限")
+
+
+def upload_not_configured(message: str | None = None) -> StoreApiError:
+    return StoreApiError(501, "UPLOAD_NOT_CONFIGURED", message or "未注入 upload_resolver")
+
+
+def file_not_configured(message: str | None = None) -> StoreApiError:
+    return StoreApiError(501, "FILE_NOT_CONFIGURED", message or "未注入 file_resolver")
+
+
 def context_error(message: str | None) -> StoreApiError:
     return StoreApiError(401, "CONTEXT_ERROR", message)
 
 
 def map_error(err: BaseException, permission_error: type[BaseException] | None) -> StoreApiError:
     """判定顺序（spec/03-errors.md）：
-    适配层守卫(400) → PermissionError(403) → queryOne 空结果(404) → 其余 500 透传
+    未注入 resolver / 适配层守卫(400/413/501，由 StoreApiError 自带 status) → PermissionError(403)
+    → GQL 解析失败(400) → 其余 500 透传。
     """
     if isinstance(err, StoreApiError):
         return err
