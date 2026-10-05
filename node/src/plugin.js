@@ -6,7 +6,10 @@
  */
 
 const { parseQueryParams, ParamError } = require('./params');
-const { mapError, errorPayload, invalidBody, notFound } = require('./errors');
+const {
+  mapError, errorPayload, invalidBody, notFound,
+  emptyBody, tooLarge, uploadNotConfigured, fileNotConfigured,
+} = require('./errors');
 
 const ARCHIVE_SUFFIX = 'Deleted';
 
@@ -42,6 +45,8 @@ function requirePermissionError() {
  * @param {(req) => any} [opts.contextProvider] 每请求上下文钩子（spec/04-context.md）
  * @param {string[]} [opts.resources] 显式资源名；缺省取 store.list() 并过滤归档表
  * @param {{PermissionError?: Function}} [opts.errors] 显式传入 store 错误类（免依赖 nodejs-store）
+ * @param {(req, rec, id) => {ref: string}} [opts.uploadResolver] 上传字节接缝；缺省时上传路由 501
+ * @param {number} [opts.uploadLimit=33554432] 上传字节体上限（超限 413）
  */
 async function storeApiPlugin(fastify, opts) {
   const {
@@ -52,10 +57,45 @@ async function storeApiPlugin(fastify, opts) {
     errors = null,
     fileField = 'file',
     fileResolver = null,
+    uploadResolver = null,
+    uploadLimit = 32 * 1024 * 1024,
   } = opts;
   if (!store) throw new Error('storeApiPlugin 需要 opts.store（nodejs-store 的 store 实例）');
   // 权限错误类来源（双端一致）：显式 errors.PermissionError → store 实例属性 → 加载 nodejs-store
   const PermissionErrorClass = (errors && errors.PermissionError) || store.PermissionError || requirePermissionError();
+
+  // 决策 B'：字节体解析归皮。注册 application/octet-stream 缓冲 parser（实例级副作用，spec/00-overview 已注明）。
+  // 必须**无条件**注册：否则未注入 uploadResolver 时 octet-stream 请求会在 parser 阶段被 Fastify 拒（415），
+  // 永远到不了 handler，无法按 spec/03 判定顺序第 1 层返回 501 UPLOAD_NOT_CONFIGURED（A5）。
+  // 同实例重复注册同类型 Fastify 会抛，故用 hasContentTypeParser 兜一层。
+  if (!fastify.hasContentTypeParser('application/octet-stream')) {
+    fastify.addContentTypeParser(
+      'application/octet-stream',
+      { parseAs: 'buffer', bodyLimit: uploadLimit },
+      (req, body, done) => done(null, body),
+    );
+  }
+
+  // 点路径取字段（决策 C）：'images.full' → rec.images.full；任一段缺失 → undefined
+  function pickField(rec, fieldPath) {
+    if (rec == null) return undefined;
+    if (!fieldPath) return rec[fileField];
+    return fieldPath.split('.').reduce((acc, k) => (acc == null ? undefined : acc[k]), rec);
+  }
+
+  // 请求级字段路径：?field= 优先，缺省回落插件级 fileField（spec/02-params.md）
+  function fieldPathOf(req) {
+    const f = req.query && req.query.field;
+    return typeof f === 'string' && f !== '' ? f : fileField;
+  }
+
+  // 上传字节体（parser 已缓冲为 Buffer；非 Buffer / 空 → 400 EMPTY_BODY；超限 → 413 UPLOAD_TOO_LARGE）
+  function requireUploadBody(req) {
+    const bytes = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!bytes || bytes.length === 0) throw emptyBody(`上传请求体为空: ${req.method} ${req.url}`);
+    if (bytes.length > uploadLimit) throw tooLarge(`上传字节体 ${bytes.length} 字节超过上限 ${uploadLimit}`);
+    return bytes;
+  }
 
   if (contextProvider) {
     fastify.addHook('onRequest', async (req) => {
@@ -130,19 +170,41 @@ async function storeApiPlugin(fastify, opts) {
     });
 
     fastify.get(`${base}/:id/file`, async (req, reply) => {
+      // spec/03 判定顺序第 1 层：未注入 fileResolver → 501（先于 queryOne 判定）
+      if (!fileResolver) throw fileNotConfigured(`GET ${base}/:id/file 未注入 fileResolver`);
+      const fp = fieldPathOf(req);
       const rec = await store.queryOne(
         `${name}($condition: @c0)${proj}`,
         { c0: { [idField]: req.params.id } },
       );
       if (rec == null) throw notFound(`记录不存在: ${idField}=${req.params.id}`);
-      const raw = rec[fileField];
-      if (raw == null) throw notFound(`文件不存在: ${fileField}=${req.params.id}`);
-      const out = fileResolver
-        ? await fileResolver(req, rec, req.params.id)
-        : { body: String(raw), contentType: 'text/plain; charset=utf-8', fileName: `${name}-${req.params.id}` };
+      const raw = pickField(rec, fp);
+      if (raw == null) throw notFound(`文件不存在: ${fp}=${req.params.id}`);
+      const out = await fileResolver(req, rec, req.params.id);
       reply.header('content-type', out.contentType || 'application/octet-stream');
       reply.header('content-disposition', `attachment; filename="${out.fileName || 'file'}"`);
       return out.body;
+    });
+
+    fastify.post(`${base}/:id/file`, async (req) => {
+      // spec/03 判定顺序第 1 层：未注入 uploadResolver → 501
+      if (!uploadResolver) throw uploadNotConfigured(`POST ${base}/:id/file 未注入 uploadResolver`);
+      const bytes = requireUploadBody(req); // 空体 400 / 超限 413
+      const fp = fieldPathOf(req);
+      const rec = await store.queryOne(
+        `${name}($condition: @c0)${proj}`,
+        { c0: { [idField]: req.params.id } },
+      );
+      if (rec == null) throw notFound(`记录不存在: ${idField}=${req.params.id}`);
+      // 接缝：resolver 负责字节落库并返回引用（决策 B：与 fileResolver 对称）
+      const out = await uploadResolver(req, rec, req.params.id);
+      if (out == null || out.ref == null) {
+        throw new Error(`uploadResolver 未返回 ref: ${name}(${idField}=${req.params.id})`); // → 500 透传（禁静默）
+      }
+      // 回写：走 update 语义 → RBAC 写权限自动生效（决策 A）。
+      // 键用点路径原样（store 非操作符键自动包 $set，点路径交由后端寻址），不在此拼嵌套对象。
+      const data = await store.update(name, { [idField]: req.params.id }, { [fp]: out.ref });
+      return { data }; // 200（Fastify 默认）
     });
 
     fastify.post(base, async (req, reply) => {

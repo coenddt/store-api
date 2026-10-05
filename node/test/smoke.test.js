@@ -7,6 +7,18 @@ const Fastify = require('fastify');
 const { storeApiPlugin, filterArchived, parseQueryParams } = require('../src/plugin');
 const { convertValue } = require('../src/params');
 
+/** 模拟 store 的 $set 点路径写入语义：'images.full' → row.images.full（Mongo $set {'a.b': v} 即嵌套写） */
+function applySet(row, path, value) {
+  if (path.startsWith('$')) return; // 原生操作符（$inc/$unset 等）本 mock 不模拟
+  const keys = path.split('.');
+  let cur = row;
+  for (let i = 0; i < keys.length - 1; i += 1) {
+    if (cur[keys[i]] == null || typeof cur[keys[i]] !== 'object') cur[keys[i]] = {};
+    cur = cur[keys[i]];
+  }
+  cur[keys[keys.length - 1]] = value;
+}
+
 /** mock store：只实现适配器调用面（query/queryOne/insert/update/remove/list/setContext） */
 class MockStore {
   constructor() {
@@ -43,7 +55,11 @@ class MockStore {
 
   async update(name, cond, data) {
     const row = this.rows.get(cond._id);
-    if (row) Object.assign(row, data);
+    if (row) {
+      // 模拟 store 的 $set 语义：非操作符键自动包 $set（nodejs-store/src/crud/write.js），
+      // 键内点路径由后端寻址（Mongo $set {'a.b': v} 即嵌套写入）。
+      for (const [k, v] of Object.entries(data)) applySet(row, k, v);
+    }
     return row || null;
   }
 
@@ -191,14 +207,22 @@ test('x-cache 注记位（B6）：无 provider 恒 BYPASS（含错误响应）�
   assert.equal(hit.headers['x-cache'], 'HIT');
 });
 
-test('文件下载路由：200 + 头；记录/字段缺失 → 404（spec/01+03+05）', async () => {
+test('文件下载路由：注入 resolver → 200 + 头；未注入 → 501；记录/字段缺失 → 404', async () => {
   const store = new MockStore();
-  const app = await buildApp(store);
 
-  const created = await app.inject({ method: 'POST', url: '/api/user', payload: { name: 'a', age: 1 } });
-  const id = created.json().data._id;
+  // 未注入 fileResolver → 501 FILE_NOT_CONFIGURED（决策 D，原 text/plain 兜底已废止）
+  const bare = await buildApp(store);
+  const rec = await bare.inject({ method: 'POST', url: '/api/user', payload: { name: 'a', age: 1 } });
+  const id = rec.json().data._id;
   store.rows.get(id).file = 'hello';
+  const notConfigured = await bare.inject({ method: 'GET', url: `/api/user/${id}/file` });
+  assert.equal(notConfigured.statusCode, 501);
+  assert.equal(notConfigured.json().error.code, 'FILE_NOT_CONFIGURED');
 
+  // 注入 resolver → 200
+  const app = await buildApp(store, {
+    fileResolver: async () => ({ body: Buffer.from('hello'), contentType: 'text/plain; charset=utf-8', fileName: `user-${id}` }),
+  });
   const file = await app.inject({ method: 'GET', url: `/api/user/${id}/file` });
   assert.equal(file.statusCode, 200);
   assert.equal(file.headers['content-type'], 'text/plain; charset=utf-8');
@@ -208,4 +232,68 @@ test('文件下载路由：200 + 头；记录/字段缺失 → 404（spec/01+03+
   const missing = await app.inject({ method: 'GET', url: '/api/user/nope/file' });
   assert.equal(missing.statusCode, 404);
   assert.equal(missing.json().error.code, 'NOT_FOUND');
+});
+
+test('文件上传路由：注入 uploadResolver → 200 + 回写；未注入 → 501；空体 → 400（spec/01+02+03）', async () => {
+  const store = new MockStore();
+
+  // 未注入 uploadResolver → 501 UPLOAD_NOT_CONFIGURED
+  const bare = await buildApp(store);
+  const created = await bare.inject({ method: 'POST', url: '/api/user', payload: { name: 'a', age: 1 } });
+  const id = created.json().data._id;
+  const notConfigured = await bare.inject({
+    method: 'POST', url: `/api/user/${id}/file`,
+    headers: { 'content-type': 'application/octet-stream' }, payload: Buffer.from('bytes'),
+  });
+  assert.equal(notConfigured.statusCode, 501);
+  assert.equal(notConfigured.json().error.code, 'UPLOAD_NOT_CONFIGURED');
+
+  // 注入 uploadResolver → 200 且字段回写
+  const app = await buildApp(store, { uploadResolver: async () => ({ ref: 'sha1abc' }) });
+  const ok = await app.inject({
+    method: 'POST', url: `/api/user/${id}/file`,
+    headers: { 'content-type': 'application/octet-stream' }, payload: Buffer.from('bytes'),
+  });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ok.json().data.file, 'sha1abc');
+  assert.equal(store.rows.get(id).file, 'sha1abc');
+
+  // 空体 → 400 EMPTY_BODY
+  const empty = await app.inject({
+    method: 'POST', url: `/api/user/${id}/file`,
+    headers: { 'content-type': 'application/octet-stream' }, payload: Buffer.alloc(0),
+  });
+  assert.equal(empty.statusCode, 400);
+  assert.equal(empty.json().error.code, 'EMPTY_BODY');
+
+  // 超限 → 413 UPLOAD_TOO_LARGE（A4；用小 uploadLimit 触发，避免构造 32MB 大包）
+  const small = await buildApp(store, { uploadResolver: async () => ({ ref: 'x' }), uploadLimit: 4 });
+  const tooLarge = await small.inject({
+    method: 'POST', url: `/api/user/${id}/file`,
+    headers: { 'content-type': 'application/octet-stream' }, payload: Buffer.from('bytes'),
+  });
+  assert.equal(tooLarge.statusCode, 413);
+  assert.equal(tooLarge.json().error.code, 'UPLOAD_TOO_LARGE');
+
+  // 记录不存在 → 404
+  const missing = await app.inject({
+    method: 'POST', url: '/api/user/nope/file',
+    headers: { 'content-type': 'application/octet-stream' }, payload: Buffer.from('bytes'),
+  });
+  assert.equal(missing.statusCode, 404);
+  assert.equal(missing.json().error.code, 'NOT_FOUND');
+});
+
+test('上传/下载 field 点路径寻址（spec/02）', async () => {
+  const store = new MockStore();
+  const created = await buildApp(store).then((a) => a.inject({ method: 'POST', url: '/api/user', payload: { name: 'a', age: 1 } }));
+  const id = created.json().data._id;
+  store.rows.get(id).images = { full: 'old-ref' };
+  const app = await buildApp(store, { uploadResolver: async () => ({ ref: 'new-ref' }) });
+  const ok = await app.inject({
+    method: 'POST', url: `/api/user/${id}/file?field=images.full`,
+    headers: { 'content-type': 'application/octet-stream' }, payload: Buffer.from('bytes'),
+  });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ok.json().data.images.full, 'new-ref');
 });
