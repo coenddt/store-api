@@ -1,6 +1,6 @@
 {
   "name": "store-api-node",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Fastify adapter that auto-generates RESTful APIs for nodejs-store schemas (schema-driven CRUD over GQL)",
   "main": "src/index.js",
   "files": [
