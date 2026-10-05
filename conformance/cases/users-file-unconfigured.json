@@ -1,0 +1,10 @@
+{
+  "name": "users-file-unconfigured",
+  "resource": "user",
+  "opts": { "noFileResolver": true, "noUploadResolver": true },
+  "steps": [
+    { "method": "POST", "path": "/api/user", "body": { "name": "alice", "file": "hello" }, "expect": { "status": 201 } },
+    { "method": "GET", "path": "/api/user/{id}/file", "useCreatedId": true, "expect": { "status": 501, "errorCode": "FILE_NOT_CONFIGURED" }, "note": "决策 D：未注入 fileResolver → 501" },
+    { "method": "POST", "path": "/api/user/{id}/file", "useCreatedId": true, "body": "raw:bytes", "headers": { "content-type": "application/octet-stream" }, "expect": { "status": 501, "errorCode": "UPLOAD_NOT_CONFIGURED" }, "note": "未注入 uploadResolver → 501" }
+  ]
+}

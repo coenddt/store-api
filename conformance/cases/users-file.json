@@ -1,6 +1,7 @@
 {
   "name": "users-file",
   "resource": "user",
+  "opts": { "fileResolver": true },
   "steps": [
     { "method": "POST", "path": "/api/user", "body": { "name": "alice", "file": "hello" }, "expect": { "status": 201 } },
     { "method": "GET", "path": "/api/user/{id}/file", "useCreatedId": true, "expect": { "status": 200 } },

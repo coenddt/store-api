@@ -14,7 +14,14 @@
 }
 ```
 
-`expect` 支持键：`status`（状态码）、`error.code`（错误码）、`dataKeys`（data 中必须出现的键，用于规避 mock/真实 store 的字段差异）。
+`expect` 支持键：`status`（状态码）、`errorCode`（错误码）、`dataKeys`（data 中必须出现的键，用于规避 mock/真实 store 的字段差异）。
+
+`opts` 为用例级适配器选项提示（runner 据此装配 mock 适配器）：
+
+- `fileResolver: true` / `uploadResolver: true`：注入最小 mock resolver（下载回固定字节、上传回固定 `ref`）；
+- `noFileResolver: true` / `noUploadResolver: true`：显式不注入，用于验证 501。
+
+> 超限（413 `UPLOAD_TOO_LARGE`）不落在 JSON 用例：32MB 字节体塞进 JSON 不现实，该场景由双端 smoke 测试通过临时调小 `uploadLimit`（如 `uploadLimit: 16`）覆盖。
 
 ## 现状
 
@@ -24,3 +31,6 @@
 ## 用例清单
 
 - `users-crud.json`：CRUD 全链路 + GQL 查询透传 + 错误矩阵（400/401/403/404/500）
+- `users-file.json`：下载路由（注入 `fileResolver`：200；记录缺失 404）
+- `users-file-upload.json`：上传路由（注入 `uploadResolver`：200 回写 / 空体 400 / 超限 413 / 记录缺失 404 / `field` 点路径）
+- `users-file-unconfigured.json`：未注入 resolver（下载 501 `FILE_NOT_CONFIGURED` / 上传 501 `UPLOAD_NOT_CONFIGURED`）
