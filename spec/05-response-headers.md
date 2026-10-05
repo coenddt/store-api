@@ -18,6 +18,6 @@ store-api「HTTP ↔ store 调用翻译」的定位（零语义发明）。
 
 ## 下载响应头（`GET /{resource}/{id}/file`）
 
-- **`content-type`**：下载响应的媒体类型。取值来源优先级：`fileResolver` 返回的 `contentType` → 未注入 resolver 时兜底 `text/plain; charset=utf-8`。缺省（resolver 未给）回落 `application/octet-stream`。
-- **`content-disposition`**：恒为 `attachment; filename="<fileName>"`；`fileName` 来源：`fileResolver` 返回的 `fileName` → 未注入 resolver 时兜底 `<resource>-<id>`；缺省回落 `file`。
+- **`content-type`**：下载响应的媒体类型，由 `fileResolver` 返回的 `contentType` 决定；缺省（resolver 未给）回落 `application/octet-stream`。（未注入 `fileResolver` ⇒ 501 `FILE_NOT_CONFIGURED`，不产生响应头，见 03-errors。）
+- **`content-disposition`**：恒为 `attachment; filename="<fileName>"`；`fileName` 来源 `fileResolver` 返回的 `fileName`，缺省回落 `file`。（未注入 `fileResolver` ⇒ 501，不产生响应头。）
 - **语义边界**：皮不推断 MIME（避免发明语义），`contentType` / `fileName` 由接入方 `fileResolver` 决定（生产应注入 resolver 走 `store.resource.open`）。下载响应体为**字节流**，非 JSON 壳。
