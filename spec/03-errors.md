@@ -19,6 +19,7 @@ HTTP 4xx/5xx
 |---|---|---|
 | 资源未注册（路由表生成后仍命中未注册名——理论上不发生，防御性保留） | 404 | `RESOURCE_NOT_FOUND` |
 | 单条查询 `queryOne` 返回空 | 404 | `NOT_FOUND` |
+| 下载路由 `GET /{resource}/{id}/file`：记录不存在 / 文件字段为空 | 404 | `NOT_FOUND` |
 | 请求体缺失 / 非 JSON 对象 | 400 | `INVALID_BODY` |
 | `p.*` 值非法（JSON 解析失败） | 400 | `INVALID_PARAM` |
 | GQL 解析失败（store 抛出，core 稳定前缀 `ERR_GQL_PARSE:`） | 400 | `GQL_PARSE` |
@@ -35,8 +36,11 @@ HTTP 4xx/5xx
 1. 适配层自身守卫（body / param 合法性）→ 400
 2. `store.PermissionError`（按错误类型判定，**不**按 message 字符串匹配）→ 403
 3. GQL 解析失败（core 稳定前缀 `ERR_GQL_PARSE:`）→ 400 `GQL_PARSE`
-4. `queryOne` 空结果 → 404
+4. `queryOne` 空结果（含下载路由「记录不存在 / 文件字段为空」）→ 404
 5. 其余一律 500 透传
+
+> 下载路由 `GET /{resource}/{id}/file` 的判定：`queryOne` 返回空 ⇒ 记录不存在 ⇒ 404 `NOT_FOUND`；
+> 记录存在但文件字段为空（`null`/缺失）⇒ 文件不存在 ⇒ 404 `NOT_FOUND`。二者文案区分、状态码同。
 
 ## 禁止事项（对照 no-error-masking）
 

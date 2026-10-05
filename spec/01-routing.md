@@ -11,11 +11,12 @@
 | POST | `/{resource}` | `insert(schemaName, body)` | `201 {"data": <插入结果>}` |
 | PATCH | `/{resource}/{id}` | `update(schemaName, cond, body)` | `200 {"data": <更新结果>}` |
 | DELETE | `/{resource}/{id}` | `remove(schemaName, cond)` | `200 {"data": <删除结果>}` |
+| GET | `/{resource}/{id}/file` | `queryOne(gql, params)` | `200` 字节流 + `content-type` / `content-disposition`（**非 JSON 壳**） |
 
 ## 明确不提供（零语义发明）
 
 - **PUT**：store 的 `update` 是部分更新语义；PUT 的全量替换语义在 store 中不存在，不发明。
-- **子资源路由** `/{resource}/{id}/{relation}`：v1 不提供。关系数据通过列表查询的 GQL 关系展开获取（见 02-params）。子资源路由的权限/分页语义复杂，留待有真实需求再进 spec。
+- **子资源路由** `/{resource}/{id}/{relation}`：v1 不提供。关系数据通过列表查询的 GQL 关系展开获取（见 02-params）。子资源路由的权限/分页语义复杂，留待有真实需求再进 spec。**唯一例外**：`/{resource}/{id}/file` 文件下载（见路由表）——字节来源由接入方 `fileResolver` 注入，皮只搬运，见 00-overview「例外登记」。
 - **路由名复数化**：路由段 = schema 资源名**原样**，不做单复数变换（双端各自实现复数规则必然漂移）。
 - **批量端点** `POST /{resource}/batch` 等：store 有 `insertMany`/`updateMany`，但其条件/批量语义与 REST 惯例的映射未定，v1 不进 spec，待需求落地时补。
 

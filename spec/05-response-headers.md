@@ -15,3 +15,9 @@
 
 `00-overview.md` 的「不做缓存」指**不实现缓存**；本头仅为宿主缓存状态的**透传注记**，不改变
 store-api「HTTP ↔ store 调用翻译」的定位（零语义发明）。
+
+## 下载响应头（`GET /{resource}/{id}/file`）
+
+- **`content-type`**：下载响应的媒体类型。取值来源优先级：`fileResolver` 返回的 `contentType` → 未注入 resolver 时兜底 `text/plain; charset=utf-8`。缺省（resolver 未给）回落 `application/octet-stream`。
+- **`content-disposition`**：恒为 `attachment; filename="<fileName>"`；`fileName` 来源：`fileResolver` 返回的 `fileName` → 未注入 resolver 时兜底 `<resource>-<id>`；缺省回落 `file`。
+- **语义边界**：皮不推断 MIME（避免发明语义），`contentType` / `fileName` 由接入方 `fileResolver` 决定（生产应注入 resolver 走 `store.resource.open`）。下载响应体为**字节流**，非 JSON 壳。
