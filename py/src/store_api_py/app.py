@@ -11,7 +11,7 @@ import json
 from typing import Any, Callable
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from .errors import (
     StoreApiError,
@@ -49,6 +49,8 @@ def create_app(
     context_provider: ContextProvider | None = None,
     resources: list[str] | None = None,
     permission_error: type[BaseException] | None = None,
+    file_field: str = "file",
+    file_resolver: Callable[[Request, dict, str], Any] | None = None,
 ) -> FastAPI:
     """为 store（py-store 的 store 实例，需已 init + register）生成 RESTful FastAPI 应用。
 
@@ -97,7 +99,7 @@ def create_app(
         # 显式投影（spec/01+02）：GQL 省略投影段 = 只返回 _id（三端 core 契约）。
         # 列表路由仅在 q 缺失时用它；q 存在时投影完全由 q 决定，适配层不追加。
         proj = _schema_projection(store, name)
-        _register_resource(app, store, name, prefix, id_field, permission_error, proj)
+        _register_resource(app, store, name, prefix, id_field, permission_error, proj, file_field, file_resolver)
 
     return app
 
@@ -153,6 +155,8 @@ def _register_resource(
     id_field: str,
     permission_error: type[BaseException] | None,
     proj: str,
+    file_field: str,
+    file_resolver: Callable[[Request, dict, str], Any] | None,
 ) -> None:
     # 工厂函数隔离闭包：handler 签名只含 Request 与路径参数，
     # 否则 FastAPI 会把捕获变量解析成查询参数（缺参即 422）
@@ -173,6 +177,27 @@ def _register_resource(
         if data is None:
             raise not_found(f"记录不存在: {id_field}={rid}")
         return {"data": data}
+
+    @app.get(base + "/{rid}/file")
+    @_guard(permission_error)
+    async def get_file(rid: str, request: Request):
+        rec = await store.query_one(f"{name}($condition: @c0){proj}", {"c0": {id_field: rid}})
+        if rec is None:
+            raise not_found(f"记录不存在: {id_field}={rid}")
+        raw = rec.get(file_field)
+        if raw is None:
+            raise not_found(f"文件不存在: {file_field}={rid}")
+        if file_resolver is not None:
+            out = file_resolver(request, rec, rid)
+            if inspect.isawaitable(out):
+                out = await out
+        else:
+            out = {"body": str(raw), "contentType": "text/plain; charset=utf-8", "fileName": f"{name}-{rid}"}
+        return Response(
+            content=out["body"],
+            media_type=out.get("contentType", "application/octet-stream"),
+            headers={"content-disposition": f'attachment; filename="{out.get("fileName", "file")}"'},
+        )
 
     @app.post(base, status_code=201)
     @_guard(permission_error)
