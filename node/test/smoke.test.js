@@ -234,6 +234,36 @@ test('文件下载路由：注入 resolver → 200 + 头；未注入 → 501；�
   assert.equal(missing.json().error.code, 'NOT_FOUND');
 });
 
+test('文件下载路由：资源无任何可读副本 → 404 NOT_FOUND（core 前缀 ERR_RESOURCE_NOT_FOUND:）', async () => {
+  const store = new MockStore();
+  // core 的 resource open 在「零副本行」时抛带稳定前缀的错误（spec/03 判定顺序第 4 层）
+  const app = await buildApp(store, {
+    fileResolver: async () => { throw new Error('ERR_RESOURCE_NOT_FOUND:资源不存在或无可读副本: sha1x'); },
+  });
+  const rec = await app.inject({ method: 'POST', url: '/api/user', payload: { name: 'a', age: 1 } });
+  const id = rec.json().data._id;
+  store.rows.get(id).file = 'sha1x'; // 字段非空才会走到 resolver（字段空是适配层判定的另一条 404）
+
+  const res = await app.inject({ method: 'GET', url: `/api/user/${id}/file` });
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.json().error.code, 'NOT_FOUND');
+  assert.equal(res.json().error.message, '资源不存在或无可读副本: sha1x'); // 前缀已被剥离
+});
+
+test('文件下载路由：provider 读取失败（非前缀错误）→ 500 透传，不得伪装成 404', async () => {
+  const store = new MockStore();
+  const app = await buildApp(store, {
+    fileResolver: async () => { throw new Error('io down'); },
+  });
+  const rec = await app.inject({ method: 'POST', url: '/api/user', payload: { name: 'a', age: 1 } });
+  const id = rec.json().data._id;
+  store.rows.get(id).file = 'sha1x';
+
+  const res = await app.inject({ method: 'GET', url: `/api/user/${id}/file` });
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.json().error.message, 'io down');
+});
+
 test('文件上传路由：注入 uploadResolver → 200 + 回写；未注入 → 501；空体 → 400（spec/01+02+03）', async () => {
   const store = new MockStore();
 

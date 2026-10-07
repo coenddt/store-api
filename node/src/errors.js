@@ -95,6 +95,12 @@ function mapError(err, PermissionErrorClass) {
   if (err && typeof err.message === 'string' && err.message.startsWith('ERR_GQL_PARSE:')) {
     return { statusCode: 400, body: errorPayload('GQL_PARSE', err.message.slice('ERR_GQL_PARSE:'.length)) };
   }
+  // spec/03 判定顺序第 4 层（core 稳定前缀类）：资源无任何可读副本
+  // （core nodejs-store resource open → ERR_RESOURCE_NOT_FOUND:）→ 404 NOT_FOUND，
+  // message 剥前缀取原文（与 GQL_PARSE 同构；禁按文案匹配）。
+  if (err && typeof err.message === 'string' && err.message.startsWith('ERR_RESOURCE_NOT_FOUND:')) {
+    return { statusCode: 404, body: errorPayload('NOT_FOUND', err.message.slice('ERR_RESOURCE_NOT_FOUND:'.length)) };
+  }
   return { statusCode: 500, body: errorPayload(storeCode(err), err ? err.message : null) };
 }
 
