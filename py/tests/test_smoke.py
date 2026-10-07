@@ -269,6 +269,35 @@ def test_file_download_route():
     assert missing.json()["error"]["code"] == "NOT_FOUND"
 
 
+def test_file_download_resource_not_found_maps_404():
+    """下载路由：资源无任何可读副本（core 前缀 ERR_RESOURCE_NOT_FOUND:）→ 404 NOT_FOUND（spec/03）。"""
+    store = MockStore()
+    rid = TestClient(build_app(store)).post("/api/user", json={"name": "a", "age": 1}).json()["data"]["_id"]
+    store.rows[rid]["file"] = "sha1x"  # 字段非空才会走到 resolver
+
+    async def _fr(request, rec, i):
+        raise FileNotFoundError("ERR_RESOURCE_NOT_FOUND:资源不存在或无可读副本: sha1x")
+
+    res = TestClient(build_app(store, file_resolver=_fr)).get(f"/api/user/{rid}/file")
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "NOT_FOUND"
+    assert res.json()["error"]["message"] == "资源不存在或无可读副本: sha1x"  # 前缀已剥离
+
+
+def test_file_download_provider_failure_stays_500():
+    """下载路由：provider 读取失败（非前缀错误）→ 500 透传，不得伪装成 404。"""
+    store = MockStore()
+    rid = TestClient(build_app(store)).post("/api/user", json={"name": "a", "age": 1}).json()["data"]["_id"]
+    store.rows[rid]["file"] = "sha1x"
+
+    async def _fr(request, rec, i):
+        raise RuntimeError("io down")
+
+    res = TestClient(build_app(store, file_resolver=_fr)).get(f"/api/user/{rid}/file")
+    assert res.status_code == 500
+    assert res.json()["error"]["message"] == "io down"
+
+
 def test_upload_route_and_field():
     """上传路由：未注入 → 501；注入 → 200 回写；空体 → 400；超限 → 413；field 点路径（spec/01+02+03）"""
     store = MockStore()

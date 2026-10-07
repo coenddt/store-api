@@ -77,4 +77,9 @@ def map_error(err: BaseException, permission_error: type[BaseException] | None) 
     text = str(err)
     if text.startswith("ERR_GQL_PARSE:"):
         return StoreApiError(400, "GQL_PARSE", text[len("ERR_GQL_PARSE:"):])
+    # spec/03 判定顺序第 4 层（core 稳定前缀类）：资源无任何可读副本
+    # （py-store resource open 零副本行 → ERR_RESOURCE_NOT_FOUND:）→ 404 NOT_FOUND，
+    # message 剥前缀取原文（与 GQL_PARSE 同构；禁按文案匹配）。
+    if text.startswith("ERR_RESOURCE_NOT_FOUND:"):
+        return StoreApiError(404, "NOT_FOUND", text[len("ERR_RESOURCE_NOT_FOUND:"):] or None)
     return StoreApiError(500, store_code(err), text or None)
