@@ -1,0 +1,9 @@
+{
+  "name": "users-file-resource-missing",
+  "resource": "user",
+  "opts": { "fileResolverNotFound": true },
+  "steps": [
+    { "method": "POST", "path": "/api/user", "body": { "name": "alice", "file": "hello" }, "expect": { "status": 201 } },
+    { "method": "GET", "path": "/api/user/{id}/file", "useCreatedId": true, "expect": { "status": 404, "errorCode": "NOT_FOUND" } }
+  ]
+}

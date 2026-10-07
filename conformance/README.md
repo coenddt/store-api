@@ -19,6 +19,7 @@
 `opts` 为用例级适配器选项提示（runner 据此装配 mock 适配器）：
 
 - `fileResolver: true` / `uploadResolver: true`：注入最小 mock resolver（下载回固定字节、上传回固定 `ref`）；
+- `fileResolverNotFound: true`：注入的 mock 下载 resolver 读取时抛 `ERR_RESOURCE_NOT_FOUND:` 前缀错误，用于验证 404 `NOT_FOUND`；
 - `noFileResolver: true` / `noUploadResolver: true`：显式不注入，用于验证 501。
 
 > 超限（413 `UPLOAD_TOO_LARGE`）不落在 JSON 用例：32MB 字节体塞进 JSON 不现实，该场景由双端 smoke 测试通过临时调小 `uploadLimit`（如 `uploadLimit: 16`）覆盖。
@@ -34,3 +35,4 @@
 - `users-file.json`：下载路由（注入 `fileResolver`：200；记录缺失 404）
 - `users-file-upload.json`：上传路由（注入 `uploadResolver`：200 回写 / 空体 400 / 超限 413 / 记录缺失 404 / `field` 点路径）
 - `users-file-unconfigured.json`：未注入 resolver（下载 501 `FILE_NOT_CONFIGURED` / 上传 501 `UPLOAD_NOT_CONFIGURED`）
+- `users-file-resource-missing.json`：下载路由资源无任何可读副本（404 `NOT_FOUND`）
