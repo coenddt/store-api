@@ -73,6 +73,17 @@ def create_app(
     if permission_error is None:
         permission_error = getattr(store, "PermissionError", None)
 
+    # fail-secure 装配守卫：宿主已开启上下文强制却未配 context_provider 时，装配期即
+    # 拒绝（fail-fast）。否则服务能启动、每个请求却在运行期以 ERR_NO_CONTEXT 失败——
+    # 配置错误被推迟成运行时事故（no-error-masking：不允许静默带错运行）。
+    require_context = getattr(store, "require_context", None)
+    if callable(require_context) and require_context() and context_provider is None:
+        raise RuntimeError(
+            "ERR_SECURE_CONFIG: 宿主已开启上下文强制（fail-secure）但未配置 context_provider；"
+            "请注入从请求解析身份的 context_provider（spec/04-context.md），"
+            "无需鉴权的内部服务请显式 store.set_require_context(False) 后再装配"
+        )
+
     def _respond(mapped: StoreApiError) -> JSONResponse:
         return JSONResponse(status_code=mapped.status_code, content=error_payload(mapped.code, mapped.message))
 

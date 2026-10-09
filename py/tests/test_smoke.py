@@ -86,6 +86,22 @@ def build_app(store, **extra):
     return create_app(store, prefix="/api", **extra)
 
 
+def test_secure_config_guard():
+    """fail-secure 装配守卫：require_context=True 且无 context_provider ⇒ 装配期 ERR_SECURE_CONFIG"""
+    store = MockStore()
+    store.require_context = lambda: True
+    # 无 context_provider：装配期拒绝（fail-fast，错误不推迟到运行期）
+    with pytest.raises(RuntimeError, match="ERR_SECURE_CONFIG"):
+        build_app(store)
+    # 补配 context_provider：正常装配
+    app = build_app(store, context_provider=lambda request: {"uid": "u1"})
+    assert app is not None
+    # require_context=False（默认姿态）时无守卫，照常装配
+    opened = MockStore()
+    opened.require_context = lambda: False
+    assert build_app(opened) is not None
+
+
 def test_filter_archived():
     assert filter_archived(["user", "userDeleted", "post", "logDeleted"]) == ["user", "post", "logDeleted"]
 

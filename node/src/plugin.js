@@ -61,6 +61,18 @@ async function storeApiPlugin(fastify, opts) {
     uploadLimit = 32 * 1024 * 1024,
   } = opts;
   if (!store) throw new Error('storeApiPlugin 需要 opts.store（nodejs-store 的 store 实例）');
+
+  // fail-secure 装配守卫：宿主已开启上下文强制却未配 contextProvider 时，装配期即拒绝
+  // （fail-fast）。否则服务能启动、每个请求却在运行期以 ERR_NO_CONTEXT 失败——
+  // 配置错误被推迟成运行时事故（no-error-masking：不允许静默带错运行）。
+  if (typeof store.requireContext === 'function' && store.requireContext() && !contextProvider) {
+    throw new Error(
+      'ERR_SECURE_CONFIG: 宿主已开启上下文强制（fail-secure）但未配置 contextProvider；'
+      + '请注入从请求解析身份的 contextProvider（spec/04-context.md），'
+      + '无需鉴权的内部服务请显式 store.setRequireContext(false) 后再装配',
+    );
+  }
+
   // 权限错误类来源（双端一致）：显式 errors.PermissionError → store 实例属性 → 加载 nodejs-store
   const PermissionErrorClass = (errors && errors.PermissionError) || store.PermissionError || requirePermissionError();
 

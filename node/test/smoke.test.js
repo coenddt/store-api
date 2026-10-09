@@ -79,6 +79,20 @@ async function buildApp(store, extraOpts = {}) {
   return app;
 }
 
+test('fail-secure 装配守卫：requireContext=true 且无 contextProvider ⇒ 装配期 ERR_SECURE_CONFIG', async () => {
+  const store = new MockStore();
+  store.requireContext = () => true;
+  // 无 contextProvider：装配期拒绝（fail-fast，错误不推迟到运行期）
+  await assert.rejects(() => buildApp(store), /ERR_SECURE_CONFIG/);
+  // 补配 contextProvider：正常装配
+  const app = await buildApp(store, { contextProvider: () => ({ uid: 'u1' }) });
+  assert.ok(app);
+  // requireContext=false（默认姿态）时无守卫，照常装配
+  const open = new MockStore();
+  open.requireContext = () => false;
+  assert.ok(await buildApp(open));
+});
+
 test('归档表过滤：XxxDeleted 且 Xxx 存在时被排除', () => {
   assert.deepEqual(filterArchived(['user', 'userDeleted', 'post', 'logDeleted']), ['user', 'post', 'logDeleted']);
 });
