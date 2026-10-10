@@ -1,6 +1,6 @@
 [project]
 name = "store-api-py"
-version = "0.4.0"
+version = "0.4.1"
 description = "FastAPI adapter that auto-generates RESTful APIs for py-store schemas (schema-driven CRUD over GQL)"
 readme = "README.md"
 requires-python = ">=3.10"

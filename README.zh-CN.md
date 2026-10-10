@@ -1,6 +1,6 @@
 # store-api
 
-为 [common-store](../) 数据层家族（nodejs-store / py-store，后续 rust 宿主）提供 **schema 驱动的 RESTful API 自动生成**。
+为 [common-store](../) 数据层家族（nodejs-store / py-store / rust-store / go-store 宿主）提供 **schema 驱动的 RESTful API 自动生成**。
 
 - Node 端：Fastify 适配器（`store-api-node`，npm）
 - Python 端：FastAPI 适配器（`store-api-py`，PyPI）
@@ -51,12 +51,19 @@ store-api/
 │   ├── 01-routing.md     # schema → 路由映射
 │   ├── 02-params.md      # 查询参数 → GQL 映射
 │   ├── 03-errors.md      # 错误 → HTTP 状态码映射
-│   └── 04-context.md     # 请求上下文 / RBAC 注入
+│   ├── 04-context.md     # 请求上下文 / RBAC 注入
+│   └── 05-response-headers.md # 响应头注记（x-cache / 下载响应头）
 ├── conformance/   # 三端一致性用例（同一份 JSON，各端各自执行、断言一致）
 ├── node/          # store-api-node（Fastify 适配器）
 ├── py/            # store-api-py（FastAPI 适配器）
 └── rust/          # store-api-rs（axum 适配器，消费 Store trait；rust-store 宿主直接实现该 trait 接入）
 ```
+
+## 近期能力
+
+- 资源上传 / 下载端点：`GET /{resource}/{id}/file`（`fileResolver`）与 `POST /{resource}/{id}/file`（`uploadResolver`）；未注入对应 resolver → 501。
+- 错误映射：资源无任何可读副本（core 稳定前缀 `ERR_RESOURCE_NOT_FOUND:`）→ HTTP 404 `NOT_FOUND`；上下文缺失（NoContext，`ERR_NO_CONTEXT:` / machine code `no_context`）→ HTTP 403。
+- `x-cache` 响应头：宿主缓存状态（`store.cacheStatus()` / `cache_status()`）的透传注记，取值 `HIT` / `MISS` / `BYPASS`；未实现缓存时恒 `BYPASS`，**所有**响应（含 4xx/5xx）均携带（见 `spec/05-response-headers.md`）。
 
 ## 一致性纪律
 
@@ -64,6 +71,6 @@ store-api/
 
 ## 路线
 
-- v0：node / py / rust 三包，CRUD + GQL 查询透传 + 错误映射 + 上下文注入（本仓库现状）
+- v0：node / py / rust / go 四端，CRUD + GQL 查询透传 + 错误映射 + 上下文注入（本仓库现状；go 端在 `store-api/go`、rust 端在 `store-api/rust`，二者不发布）
 - v1：`@fastify/swagger` 与 Pydantic、utoipa 三端 OpenAPI 文档对齐；conformance 三端互验 CI
 - rust/ 开箱桥接：cargo feature `rust-store`（`RustStoreAdapter` 新类型实现 `Store` trait，git 依赖 rust-store 宿主，发布 crates.io 后改版本依赖）；桥接 e2e 用真实宿主 + 真实 SQLite 走完整 HTTP 栈（含 guest 403 / 归档事务化）
