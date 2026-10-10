@@ -30,6 +30,7 @@ HTTP 4xx/5xx
 >（构造后剥离，不对中文文案做脆弱匹配）。响应 `code` 统一取 `GQL_PARSE`，`message` 为
 > core 原文（剥离前缀后的完整文案）。
 | store `PermissionError`（RBAC 拒绝） | 403 | store 原始 code/name |
+| store `NoContextError`（`requireContext` 开启且未注入 ctx；core 稳定前缀 `ERR_NO_CONTEXT:`，machine code `no_context`） | 403 | store 原始 code/name |
 | 其余 store 抛出的错误（数据库、连接、方言等） | 500 | store 原始 code/name |
 | 上传路由 `POST /{resource}/{id}/file`：请求体为空 | 400 | `EMPTY_BODY` |
 | 上传路由 `POST /{resource}/{id}/file`：字节体超过 `uploadLimit` | 413 | `UPLOAD_TOO_LARGE` |
@@ -40,7 +41,9 @@ HTTP 4xx/5xx
 
 1. 未注入 resolver（上传缺 `uploadResolver` / 下载缺 `fileResolver`）→ 501 `UPLOAD_NOT_CONFIGURED` / `FILE_NOT_CONFIGURED`
 2. 适配层自身守卫（body / param 合法性、空体、超限）→ 400 `INVALID_BODY` / `INVALID_PARAM` / `EMPTY_BODY`，413 `UPLOAD_TOO_LARGE`
-3. `store.PermissionError`（按错误类型判定，**不**按 message 字符串匹配）→ 403
+3. 权限类错误（按错误类型 / core machine code 判定，**不**按 message 字符串匹配）→ 403：
+   - `store.PermissionError`（RBAC 拒绝）
+   - `store.NoContextError`（`requireContext` 开启且 ctx 缺失；core machine code `no_context`，与 `PermissionError` 同属权限类，非 500）
 4. core 稳定前缀类错误（构造后剥离，不对中文文案做脆弱匹配）：
    - GQL 解析失败（`ERR_GQL_PARSE:`）→ 400 `GQL_PARSE`
    - 资源无任何可读副本（`ERR_RESOURCE_NOT_FOUND:`）→ 404 `NOT_FOUND`

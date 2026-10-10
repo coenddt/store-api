@@ -61,7 +61,7 @@ def context_error(message: str | None) -> StoreApiError:
 
 def map_error(err: BaseException, permission_error: type[BaseException] | None) -> StoreApiError:
     """判定顺序（spec/03-errors.md）：
-    未注入 resolver / 适配层守卫(400/413/501，由 StoreApiError 自带 status) → PermissionError(403)
+    未注入 resolver / 适配层守卫(400/413/501，由 StoreApiError 自带 status) → 权限类(403)
     → GQL 解析失败(400) → 其余 500 透传。
     """
     if isinstance(err, StoreApiError):
@@ -70,6 +70,11 @@ def map_error(err: BaseException, permission_error: type[BaseException] | None) 
         return StoreApiError(400, "INVALID_PARAM", str(err) or None)
     if permission_error is not None and isinstance(err, permission_error):
         # 按类型判定，禁按 message 匹配
+        return StoreApiError(403, store_code(err), str(err) or None)
+    if getattr(err, "code", None) == "no_context":
+        # spec/03 判定顺序第 3 层：权限类同档 —— py-store NoContextError（machine code
+        # `no_context`，requireContext 开启且 ctx 缺失）；按 code 判定（宿主已剥前缀），
+        # 禁按 message 匹配 → 403。
         return StoreApiError(403, store_code(err), str(err) or None)
     # spec/03 判定顺序第 3 层：GQL 解析失败（core 稳定前缀 ERR_GQL_PARSE:，与
     # ERR_PERM_PREFIX 同构的类型级契约——前缀判定非文案脆弱匹配）→ 400 GQL_PARSE，

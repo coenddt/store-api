@@ -45,6 +45,12 @@ func isPermissionError(err error) bool {
 	return err != nil && strings.HasPrefix(err.Error(), "ERR_PERMISSION:")
 }
 
+// isNoContextError 判定 requireContext 开启且 ctx 缺失（core 稳定前缀 ERR_NO_CONTEXT:）。
+// 与 isPermissionError 同构（core 类型级契约），同属权限类 ⇒ 403。
+func isNoContextError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "ERR_NO_CONTEXT:")
+}
+
 // gqlParsePrefix GQL 解析失败的稳定前缀（core pipeline/parse.rs；spec/03 v1 修订：
 // 与 ERR_PERM_PREFIX 同构的类型级契约，四端按前缀判定 → 400 GQL_PARSE）。
 const gqlParsePrefix = "ERR_GQL_PARSE:"
@@ -91,6 +97,10 @@ func writeError(w http.ResponseWriter, err error) {
 		status, code, message = ae.Status, ae.Code, ae.Message
 	} else if isPermissionError(err) {
 		status, code, message = http.StatusForbidden, permCode(err), err.Error()
+	} else if isNoContextError(err) {
+		// spec/03 判定顺序第 3 层：权限类同档 —— NoContext（core 稳定前缀
+		// ERR_NO_CONTEXT:，machine code `no_context`）⇒ 403，与 PermissionError 同档。
+		status, code, message = http.StatusForbidden, "no_context", err.Error()
 	} else if isGqlParseError(err) {
 		// spec/03 判定顺序第 3 层：GQL 解析失败 → 400 GQL_PARSE（message 剥前缀取原文）
 		status, code, message = http.StatusBadRequest, "GQL_PARSE", gqlParseMessage(err)

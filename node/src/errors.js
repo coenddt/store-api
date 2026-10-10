@@ -68,7 +68,7 @@ const GUARD_STATUS = {
 
 /**
  * 判定顺序（spec/03-errors.md）：
- * 未注入 resolver / 适配层守卫(400/413/501) → CONTEXT_ERROR(401) → PermissionError(403)
+ * 未注入 resolver / 适配层守卫(400/413/501) → CONTEXT_ERROR(401) → 权限类(403)
  * → GQL 解析失败(400) → 其余 500 透传
  * @param {Error} err
  * @param {Function|null} PermissionErrorClass store 的权限错误类（按类型判定，禁按 message 匹配）
@@ -87,6 +87,12 @@ function mapError(err, PermissionErrorClass) {
     return { statusCode: 401, body: errorPayload('CONTEXT_ERROR', err.message) };
   }
   if (PermissionErrorClass && err instanceof PermissionErrorClass) {
+    return { statusCode: 403, body: errorPayload(storeCode(err), err.message) };
+  }
+  // spec/03 判定顺序第 3 层：权限类同档 —— NoContext（requireContext 开启且 ctx 缺失）。
+  // 宿主（nodejs-store）抛 NoContextError 且带稳定 machine code `no_context`；按 code 判定，
+  // 禁按 message 匹配（宿主已剥前缀）→ 403，与 PermissionError 同档。
+  if (err && err.code === 'no_context') {
     return { statusCode: 403, body: errorPayload(storeCode(err), err.message) };
   }
   // spec/03 判定顺序第 4 层：GQL 解析失败（core 稳定前缀 ERR_GQL_PARSE:，与

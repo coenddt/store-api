@@ -69,12 +69,21 @@ pub fn store_message(err: &str) -> Option<String> {
 }
 
 /// 判定顺序（spec/03-errors.md）：
-/// 适配层守卫(400) → 权限拒绝(403) → queryOne 空结果(404) → 其余 500 透传
+/// 适配层守卫(400) → 权限类拒绝(403) → queryOne 空结果(404) → 其余 500 透传
 pub fn map_store_err(err: &str, is_permission_error: impl Fn(&str) -> bool) -> StoreApiError {
     if is_permission_error(err) {
         return StoreApiError {
             status: StatusCode::FORBIDDEN,
             code: store_code(err),
+            message: store_message(err),
+        };
+    }
+    // spec/03 判定顺序第 3 层：权限类同档 —— NoContext（require_context 开启且 ctx 缺失，
+    // core 稳定前缀 ERR_NO_CONTEXT:，machine code `no_context`）⇒ 403，与 PermissionError 同档。
+    if err.starts_with("ERR_NO_CONTEXT:") {
+        return StoreApiError {
+            status: StatusCode::FORBIDDEN,
+            code: "no_context".into(),
             message: store_message(err),
         };
     }
