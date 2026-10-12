@@ -344,8 +344,15 @@ test('上传/下载 field 点路径寻址（spec/02）', async () => {
 
 // ── R2-04：policyProvider 请求入口作用域化（与 py tests/test_smoke.py 同构，双端 parity）──
 
-test('policyProvider 装配守卫 + requireContext 覆盖：无 ctx 请求 → no_context(403)；返回 null → 行为同现状', async () => {
-  const { currentView } = require('nodejs-store');
+test('policyProvider 装配守卫 + requireContext 覆盖：无 ctx 请求 → no_context(403)；返回 null → 行为同现状', async (t) => {
+  // policyProvider 流程依赖宿主 nodejs-store 的 withScope 作用域原语（optional peer，CI 不安装）；
+  // 宿主不可解析 ⇒ 显式 skip（与 e2e.real.test.js 同惯例，本地 workspace 仍全量验证）
+  let currentView;
+  try {
+    currentView = require('nodejs-store').currentView;
+  } catch {
+    return t.skip('nodejs-store(optional peer) 不可解析：CI 无宿主包，policyProvider 流程本地验证');
+  }
 
   // 装配守卫：宿主未导出 baseView() 时注入 policyProvider ⇒ 装配期显式失败（fail-fast，禁静默降级）
   const legacy = new MockStore();
@@ -384,8 +391,13 @@ test('policyProvider 装配守卫 + requireContext 覆盖：无 ctx 请求 → n
   assert.equal(ok.json().error, undefined);
 });
 
-test('policyProvider：profile 覆盖经视图生效（查询面可观察）；ctx 复用自 contextProvider（禁二次调用）', async () => {
-  const { currentView } = require('nodejs-store');
+test('policyProvider：profile 覆盖经视图生效（查询面可观察）；ctx 复用自 contextProvider（禁二次调用）', async (t) => {
+  let currentView;
+  try {
+    currentView = require('nodejs-store').currentView;
+  } catch {
+    return t.skip('nodejs-store(optional peer) 不可解析：CI 无宿主包，policyProvider 流程本地验证');
+  }
   const store = new MockStore();
   store.baseView = () => ({ withPolicy: (o) => ({ overrides: o }) });
   // 档位判决可观察面：text2query 档视图下输出收缩（模拟 core 判决差异经宿主查询面可见）
