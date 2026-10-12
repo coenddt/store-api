@@ -57,12 +57,17 @@ def create_app(
     file_resolver: Callable[[Request, dict, str], Any] | None = None,
     upload_resolver: Callable[[Request, dict, str], Any] | None = None,
     upload_limit: int = 32 * 1024 * 1024,
+    policy_provider: Callable[[Any], Any | None] | None = None,
 ) -> FastAPI:
     """为 store（py-store 的 store 实例，需已 init + register）生成 RESTful FastAPI 应用。
 
     - prefix: 路由前缀，如 '/api'
     - id_field: 单条路由主键字段名（双端一致，spec/01-routing.md，默认 '_id'）
     - context_provider: 每请求上下文钩子（spec/04-context.md）；非权限类抛错 ⇒ 401 CONTEXT_ERROR
+    - policy_provider: 每请求策略覆盖钩子 (ctx) => overrides | None（R2-04 §4.1）；
+      overrides 非 None 时经 store.base_view().with_policy(overrides) 派生视图，
+      并以 with_scope 作用域包裹全部 handler；None（缺省）= 不启用，行为同现状。
+      需宿主提供 base_view；provider 异常同走 map_error 单一出口（禁吞）
     - resources: 显式资源名；缺省取 store.list() 并过滤归档表
     - permission_error: store 权限错误类；缺省取 store.PermissionError
     - file_resolver: 下载字节接缝 (request, rec, rid) => {body, contentType, fileName}；缺省时下载 501
@@ -84,8 +89,45 @@ def create_app(
             "无需鉴权的内部服务请显式 store.set_require_context(False) 后再装配"
         )
 
+    # R2-04 装配守卫：注入 policy_provider 需宿主提供 base_view（py-store 提供）——
+    # 皮侧禁自持 Registry 派生视图（R2-04 §7），宿主不支持时装配期显式失败（fail-fast）。
+    if policy_provider is not None and not callable(getattr(store, "base_view", None)):
+        raise RuntimeError(
+            "ERR_POLICY_PROVIDER_CONFIG: 注入 policy_provider 需要宿主 store.base_view()"
+            "（py-store 提供）；皮侧禁自持 Registry 派生视图（R2-04 §7）"
+        )
+    _with_scope = None
+    if policy_provider is not None:
+        try:
+            from py_store import with_scope as _with_scope  # optional peer，惰性加载
+        except Exception as e:  # noqa: BLE001 — 依赖缺失装配期显式失败，禁静默降级
+            raise RuntimeError(
+                f"ERR_DEPENDENCY_MISSING: 注入 policy_provider 需要安装 py-store（with_scope）: {e}"
+            ) from e
+
     def _respond(mapped: StoreApiError) -> JSONResponse:
         return JSONResponse(status_code=mapped.status_code, content=error_payload(mapped.code, mapped.message))
+
+    # 注册顺序说明：Starlette 中间件后注册者在外层。执行序（外→内）=
+    # _annotate_cache → _inject_context → _scoped_dispatch → 路由。
+    # _scoped_dispatch 需读 _inject_context 写入的 request.state.store_ctx，故先注册（更内层）。
+    if policy_provider is not None:
+
+        @app.middleware("http")
+        async def _scoped_dispatch(request: Request, call_next):
+            # R2-04 §4.1：ctx 复用自 context_provider 已解析值（request.state.store_ctx，
+            # 禁二次调用 provider）；无 context_provider 时为 None。
+            # provider 异常同走 map_error 单一出口（禁吞、禁静默降级）。
+            try:
+                overrides = policy_provider(getattr(request.state, "store_ctx", None))
+            except Exception as e:  # noqa: BLE001 — 错误映射为带语义的 HTTP 响应，禁止静默
+                mapped = map_error(e, permission_error)
+                return JSONResponse(
+                    status_code=mapped.status_code, content=error_payload(mapped.code, mapped.message)
+                )
+            view = store.base_view().with_policy(overrides) if overrides is not None else None
+            with _with_scope(view):
+                return await call_next(request)
 
     if context_provider is not None:
 
@@ -100,6 +142,8 @@ def create_app(
             # spec/04：返回 None 时同样显式注入空上下文（store.set_context(None) 语义为清除，
             # 有状态持有的运行时禁止残留上一请求上下文，防身份跨请求泄漏）
             store.set_context(ctx)
+            # R2-04：已解析 ctx 存 request.state 供 _scoped_dispatch 复用（禁二次调用 provider）
+            request.state.store_ctx = ctx
             return await call_next(request)
 
     # B6：`x-cache` 响应头注记位——取值唯一来源为宿主 store.cache_status（未实现时恒 BYPASS）；

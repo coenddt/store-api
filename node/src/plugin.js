@@ -36,6 +36,18 @@ function requirePermissionError() {
   }
 }
 
+/** withScope 作用域原语来源（nodejs-store optional peer；仅注入 policyProvider 时才加载） */
+function requireWithScope() {
+  try {
+    // eslint-disable-next-line global-require
+    return require('nodejs-store').withScope;
+  } catch (e) {
+    const err = new Error('注入 policyProvider 需要 nodejs-store 的 withScope 作用域原语（optional peer）');
+    err.code = 'DEPENDENCY_MISSING';
+    throw err;
+  }
+}
+
 /**
  * @param {import('fastify').FastifyInstance} fastify
  * @param {object} opts
@@ -43,6 +55,11 @@ function requirePermissionError() {
  * @param {string} [opts.prefix] 路由前缀（由 fastify register 的 options.prefix 机制应用，插件内不重复拼接）
  * @param {string} [opts.idField='_id'] 单条路由主键字段名（双端一致，spec/01-routing.md）
  * @param {(req) => any} [opts.contextProvider] 每请求上下文钩子（spec/04-context.md）
+ * @param {(ctx) => object|null} [opts.policyProvider] 每请求策略覆盖钩子（R2-04 §4.1）：
+ *   入参为该请求已解析的上下文（contextProvider 产物，未配置 contextProvider 时为 null），
+ *   返回 01 §4.3 JSON 契约形态的 overrides 对象或 null（null = 行为同现状）。注入后每请求经
+ *   `store.baseView().withPolicy(overrides)` 派生视图并在作用域内执行 handler；未注入走原路径
+ *   （逐字节一致，A7）。provider 抛错 = 请求期显式失败（经单一错误出口，禁吞）。
  * @param {string[]} [opts.resources] 显式资源名；缺省取 store.list() 并过滤归档表
  * @param {{PermissionError?: Function}} [opts.errors] 显式传入 store 错误类（免依赖 nodejs-store）
  * @param {(req, rec, id) => {ref: string}} [opts.uploadResolver] 上传字节接缝；缺省时上传路由 501
@@ -53,6 +70,7 @@ async function storeApiPlugin(fastify, opts) {
     store,
     idField = '_id',
     contextProvider = null,
+    policyProvider = null,
     resources = null,
     errors = null,
     fileField = 'file',
@@ -72,6 +90,16 @@ async function storeApiPlugin(fastify, opts) {
       + '无需鉴权的内部服务请显式 store.setRequireContext(false) 后再装配',
     );
   }
+
+  // R2-04 §7：policyProvider 注入时宿主必须经门面导出 base 引用（store.baseView()）；
+  // 皮侧禁自持 Registry（A-2 否决路线），缺能力即装配期显式失败（fail-fast，禁静默降级）。
+  if (policyProvider && typeof store.baseView !== 'function') {
+    throw new Error(
+      'ERR_POLICY_PROVIDER_CONFIG: 注入 policyProvider 需要宿主 store.baseView()（nodejs-store 提供）；'
+      + '皮侧禁自持 Registry 派生视图（R2-04 §7）',
+    );
+  }
+  const withScopeFn = policyProvider ? requireWithScope() : null;
 
   // 权限错误类来源（双端一致）：显式 errors.PermissionError → store 实例属性 → 加载 nodejs-store
   const PermissionErrorClass = (errors && errors.PermissionError) || store.PermissionError || requirePermissionError();
@@ -124,8 +152,20 @@ async function storeApiPlugin(fastify, opts) {
       // spec/04：返回 null/undefined 时同样显式注入空上下文（store.setContext(null) 语义为清除，
       // 有状态持有的运行时禁止残留上一请求上下文，防身份跨请求泄漏）
       await store.setContext(ctx);
+      // R2-04 §8.2：复用既有 ctx 构造（禁二次调用 contextProvider），供 policyProvider 读取
+      req.storeCtx = ctx ?? null;
     });
   }
+
+  // R2-04 §4.1 请求入口作用域化（可选注入）：policyProvider(ctx) → overrides →
+  // base.withPolicy(overrides) 派生视图 → withScope({ view }) 执行既有 handler。
+  // 未注入走原路径（A7 逐字节一致）；provider 抛错原样冒泡至单一错误出口（禁吞）。
+  const scoped = (handler) => async (req, reply) => {
+    if (!policyProvider) return handler(req, reply);
+    const overrides = policyProvider(req.storeCtx ?? null);
+    const view = overrides ? store.baseView().withPolicy(overrides) : null;
+    return withScopeFn(view ? { view } : null, () => handler(req, reply));
+  };
 
   // 单一错误出口：handler / onRequest 钩子抛出的所有错误统一走 mapError 判定
   // （禁 catch 后洗成成功；hook 错误不经过 handler 内 catch，必须由框架错误处理器承接）
@@ -169,19 +209,19 @@ async function storeApiPlugin(fastify, opts) {
     // 列表路由仅在 q 缺失时用它；q 存在时投影完全由 q 决定，适配层不追加。
     const proj = schemaProjection(store, name);
 
-    fastify.get(base, async (req) => {
+    fastify.get(base, scoped(async (req) => {
       const params = parseQueryParams(req.query);
       const gql = name + (req.query.q || proj);
       return { data: await store.query(gql, params) };
-    });
+    }));
 
-    fastify.get(`${base}/:id`, async (req) => {
+    fastify.get(`${base}/:id`, scoped(async (req) => {
       const data = await store.queryOne(`${name}($condition: @c0)${proj}`, oneParams(req.params.id));
       if (data == null) throw notFound(`记录不存在: ${idField}=${req.params.id}`);
       return { data };
-    });
+    }));
 
-    fastify.get(`${base}/:id/file`, async (req, reply) => {
+    fastify.get(`${base}/:id/file`, scoped(async (req, reply) => {
       // spec/03 判定顺序第 1 层：未注入 fileResolver → 501（先于 queryOne 判定）
       if (!fileResolver) throw fileNotConfigured(`GET ${base}/:id/file 未注入 fileResolver`);
       const fp = fieldPathOf(req);
@@ -196,9 +236,9 @@ async function storeApiPlugin(fastify, opts) {
       reply.header('content-type', out.contentType || 'application/octet-stream');
       reply.header('content-disposition', `attachment; filename="${out.fileName || 'file'}"`);
       return out.body;
-    });
+    }));
 
-    fastify.post(`${base}/:id/file`, async (req) => {
+    fastify.post(`${base}/:id/file`, scoped(async (req) => {
       // spec/03 判定顺序第 1 层：未注入 uploadResolver → 501
       if (!uploadResolver) throw uploadNotConfigured(`POST ${base}/:id/file 未注入 uploadResolver`);
       const bytes = requireUploadBody(req); // 空体 400 / 超限 413
@@ -217,22 +257,22 @@ async function storeApiPlugin(fastify, opts) {
       // 键用点路径原样（store 非操作符键自动包 $set，点路径交由后端寻址），不在此拼嵌套对象。
       const data = await store.update(name, { [idField]: req.params.id }, { [fp]: out.ref });
       return { data }; // 200（Fastify 默认）
-    });
+    }));
 
-    fastify.post(base, async (req, reply) => {
+    fastify.post(base, scoped(async (req, reply) => {
       const body = requireBody(req.body);
       reply.code(201);
       return { data: await store.insert(name, body) };
-    });
+    }));
 
-    fastify.patch(`${base}/:id`, async (req) => {
+    fastify.patch(`${base}/:id`, scoped(async (req) => {
       const body = requireBody(req.body);
       return { data: await store.update(name, { [idField]: req.params.id }, body) };
-    });
+    }));
 
-    fastify.delete(`${base}/:id`, async (req) => (
+    fastify.delete(`${base}/:id`, scoped(async (req) => (
       { data: await store.remove(name, { [idField]: req.params.id }) }
-    ));
+    )));
   }
 }
 

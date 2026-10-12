@@ -341,3 +341,70 @@ test('上传/下载 field 点路径寻址（spec/02）', async () => {
   assert.equal(ok.statusCode, 200);
   assert.equal(ok.json().data.images.full, 'new-ref');
 });
+
+// ── R2-04：policyProvider 请求入口作用域化（与 py tests/test_smoke.py 同构，双端 parity）──
+
+test('policyProvider 装配守卫 + requireContext 覆盖：无 ctx 请求 → no_context(403)；返回 null → 行为同现状', async () => {
+  const { currentView } = require('nodejs-store');
+
+  // 装配守卫：宿主未导出 baseView() 时注入 policyProvider ⇒ 装配期显式失败（fail-fast，禁静默降级）
+  const legacy = new MockStore();
+  await assert.rejects(
+    () => buildApp(legacy, { policyProvider: () => null }),
+    /ERR_POLICY_PROVIDER_CONFIG/,
+  );
+
+  const store = new MockStore();
+  store.baseView = () => ({ withPolicy: (o) => ({ overrides: o }) });
+  // 作用域感知的 query（模拟宿主 fail-secure：视图要求 ctx 且当前 ctx 缺失 ⇒ NoContext）
+  store.query = async () => {
+    const view = currentView();
+    if (view && view.overrides && view.overrides.requireContext && store.lastContext == null) {
+      const e = new Error('ERR_NO_CONTEXT:上下文缺失');
+      e.code = 'no_context';
+      throw e;
+    }
+    return [...store.rows.values()];
+  };
+
+  // ① 注入 requireContext 覆盖：未配 contextProvider（policyProvider 收到 null）→ 403 no_context
+  let seenCtx = 'unset';
+  const app = await buildApp(store, {
+    policyProvider: (ctx) => { seenCtx = ctx; return { requireContext: true }; },
+  });
+  const denied = await app.inject({ method: 'GET', url: '/api/user' });
+  assert.equal(seenCtx, null); // policyProvider 入参 = 已解析 ctx（无 contextProvider ⇒ null）
+  assert.equal(denied.statusCode, 403);
+  assert.equal(denied.json().error.code, 'no_context');
+
+  // ② 注入返回 null ⇒ 无视图作用域（currentView() 回退 base）→ 行为同现状
+  const lax = await buildApp(store, { policyProvider: () => null });
+  const ok = await lax.inject({ method: 'GET', url: '/api/user' });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ok.json().error, undefined);
+});
+
+test('policyProvider：profile 覆盖经视图生效（查询面可观察）；ctx 复用自 contextProvider（禁二次调用）', async () => {
+  const { currentView } = require('nodejs-store');
+  const store = new MockStore();
+  store.baseView = () => ({ withPolicy: (o) => ({ overrides: o }) });
+  // 档位判决可观察面：text2query 档视图下输出收缩（模拟 core 判决差异经宿主查询面可见）
+  store.query = async () => {
+    const view = currentView();
+    if (view && view.overrides && view.overrides.profile === 'text2query') {
+      return [{ _id: 'r1', name: 'redacted' }];
+    }
+    return [...store.rows.values()];
+  };
+  let ctxCalls = 0;
+  const app = await buildApp(store, {
+    contextProvider: () => { ctxCalls += 1; return { uid: 'u9' }; },
+    policyProvider: (ctx) => (ctx && ctx.uid === 'u9' ? { profile: 'text2query' } : null),
+  });
+  await app.inject({ method: 'POST', url: '/api/user', payload: { name: 'a', age: 1 } });
+  const res = await app.inject({ method: 'GET', url: '/api/user' });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json().data, [{ _id: 'r1', name: 'redacted' }]);
+  // 两个请求各解析一次 contextProvider（onRequest 已解析值存 req 复用，禁二次调用）
+  assert.equal(ctxCalls, 2);
+});

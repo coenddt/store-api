@@ -5,12 +5,15 @@ conformance 纪律：两端断言逐项对应，任何一端改动必须同步�
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# py-store 为 optional peer（跨仓源码直连，node 侧对应 junction link）
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "py-store" / "src"))
 
 from store_api_py import ParamError, create_app, filter_archived, parse_query_params  # noqa: E402
 from store_api_py.params import convert_value  # noqa: E402
@@ -356,3 +359,89 @@ def test_upload_route_and_field():
                           headers={"content-type": "application/octet-stream"})
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "NOT_FOUND"
+
+
+# ── R2-04：policy_provider 请求入口作用域化（与 node test/smoke.test.js 同构，双端 parity）──
+
+
+def test_policy_provider_guard_and_require_context():
+    """装配守卫 + requireContext 覆盖：无 ctx 请求 → no_context(403)；返回 None → 行为同现状。"""
+    from py_store import current_scope
+
+    # 装配守卫：宿主未导出 base_view() 时注入 policy_provider ⇒ 装配期显式失败（fail-fast，禁静默降级）
+    legacy = MockStore()
+    with pytest.raises(RuntimeError, match="ERR_POLICY_PROVIDER_CONFIG"):
+        build_app(legacy, policy_provider=lambda ctx: None)
+
+    store = MockStore()
+    store.base_view = lambda: SimpleNamespace(with_policy=lambda o: {"overrides": o})
+
+    # 作用域感知的 query（模拟宿主 fail-secure：视图要求 ctx 且当前 ctx 缺失 ⇒ NoContext）
+    async def scoped_query(gql, params=None):
+        scope = current_scope()
+        view = scope.view if scope is not None else None
+        ov = (view or {}).get("overrides") or {}
+        if ov.get("requireContext") and store.last_context is None:
+            e = RuntimeError("ERR_NO_CONTEXT:上下文缺失")
+            e.code = "no_context"
+            raise e
+        return list(store.rows.values())
+
+    store.query = scoped_query
+
+    # ① 注入 requireContext 覆盖：未配 context_provider（policy_provider 收到 None）→ 403 no_context
+    seen = []
+
+    def provider(ctx):
+        seen.append(ctx)
+        return {"requireContext": True}
+
+    client = TestClient(build_app(store, policy_provider=provider))
+    denied = client.get("/api/user")
+    assert seen == [None]  # policy_provider 入参 = 已解析 ctx（无 context_provider ⇒ None）
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "no_context"
+
+    # ② 注入返回 None ⇒ 无视图作用域（current_scope().view 回退 None）→ 行为同现状
+    lax = TestClient(build_app(store, policy_provider=lambda ctx: None))
+    ok = lax.get("/api/user")
+    assert ok.status_code == 200
+    assert "error" not in ok.json()
+
+
+def test_policy_provider_profile_view_and_ctx_reuse():
+    """profile 覆盖经视图生效（查询面可观察）；ctx 复用自 context_provider（禁二次调用）。"""
+    from py_store import current_scope
+
+    store = MockStore()
+    store.base_view = lambda: SimpleNamespace(with_policy=lambda o: {"overrides": o})
+
+    # 档位判决可观察面：text2query 档视图下输出收缩（模拟 core 判决差异经宿主查询面可见）
+    async def scoped_query(gql, params=None):
+        scope = current_scope()
+        view = scope.view if scope is not None else None
+        ov = (view or {}).get("overrides") or {}
+        if ov.get("profile") == "text2query":
+            return [{"_id": "r1", "name": "redacted"}]
+        return list(store.rows.values())
+
+    store.query = scoped_query
+
+    ctx_calls = 0
+
+    def cp(request):
+        nonlocal ctx_calls
+        ctx_calls += 1
+        return {"uid": "u9"}
+
+    client = TestClient(build_app(
+        store,
+        context_provider=cp,
+        policy_provider=lambda ctx: {"profile": "text2query"} if ctx and ctx.get("uid") == "u9" else None,
+    ))
+    client.post("/api/user", json={"name": "a", "age": 1})
+    res = client.get("/api/user")
+    assert res.status_code == 200
+    assert res.json()["data"] == [{"_id": "r1", "name": "redacted"}]
+    # 两个请求各解析一次 context_provider（已解析值存 request.state 复用，禁二次调用）
+    assert ctx_calls == 2
