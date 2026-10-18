@@ -70,6 +70,11 @@ class MockStore {
   }
 
   async setContext(ctx) { this.lastContext = ctx; }
+
+  /** 宿主门面：请求级降级容器（scoped 依赖；mock 不模拟降级事件） */
+  async withDegradedScope(fn) {
+    return { result: await fn(), status: { degraded: false, events: [] } };
+  }
 }
 
 async function buildApp(store, extraOpts = {}) {

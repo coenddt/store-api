@@ -161,10 +161,16 @@ async function storeApiPlugin(fastify, opts) {
   // base.withPolicy(overrides) 派生视图 → withScope({ view }) 执行既有 handler。
   // 未注入走原路径（A7 逐字节一致）；provider 抛错原样冒泡至单一错误出口（禁吞）。
   const scoped = (handler) => async (req, reply) => {
-    if (!policyProvider) return handler(req, reply);
-    const overrides = policyProvider(req.storeCtx ?? null);
-    const view = overrides ? store.baseView().withPolicy(overrides) : null;
-    return withScopeFn(view ? { view } : null, () => handler(req, reply));
+    const run = () => {
+      if (!policyProvider) return handler(req, reply);
+      const overrides = policyProvider(req.storeCtx ?? null);
+      const view = overrides ? store.baseView().withPolicy(overrides) : null;
+      return withScopeFn(view ? { view } : null, () => handler(req, reply));
+    };
+    // 请求级降级容器：handler 内 query/降级事件写入本容器，退出前快照供 onSend 读取
+    const { result, status } = await store.withDegradedScope(run);
+    req.storeDegraded = status;
+    return result;
   };
 
   // 单一错误出口：handler / onRequest 钩子抛出的所有错误统一走 mapError 判定
@@ -181,6 +187,9 @@ async function storeApiPlugin(fastify, opts) {
   fastify.addHook('onSend', async (req, reply, payload) => {
     const v = typeof store.cacheStatus === 'function' ? store.cacheStatus() : 'BYPASS';
     reply.header('x-cache', CACHE_VALUES.includes(v) ? v : 'BYPASS');
+    // 请求级降级注记：只读本请求容器快照（无容器 ⇒ false；静态 native 不参与）
+    const d = req.storeDegraded;
+    reply.header('x-store-degraded', d && d.degraded === true ? 'true' : 'false');
     return payload;
   });
 
