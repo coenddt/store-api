@@ -109,7 +109,7 @@ def create_app(
         return JSONResponse(status_code=mapped.status_code, content=error_payload(mapped.code, mapped.message))
 
     # 注册顺序说明：Starlette 中间件后注册者在外层。执行序（外→内）=
-    # _annotate_cache → _inject_context → _scoped_dispatch → 路由。
+    # _annotate_degraded → _annotate_cache → _inject_context → _scoped_dispatch → 路由。
     # _scoped_dispatch 需读 _inject_context 写入的 request.state.store_ctx，故先注册（更内层）。
     if policy_provider is not None:
 
@@ -156,6 +156,24 @@ def create_app(
         fn = getattr(store, "cache_status", None)
         v = fn() if callable(fn) else "BYPASS"
         response.headers["x-cache"] = v if v in _CACHE_VALUES else "BYPASS"
+        return response
+
+    # 请求级降级注记：容器建在父 task，call_next 子 task 持有同一引用 → handler 内事件对父 task 可见。
+    # 状态必须在容器仍有效时快照（end() 会复位 ContextVar，之后再读恒为 false）。
+    @app.middleware("http")
+    async def _annotate_degraded(request: Request, call_next):
+        degraded_mod = getattr(store, "degraded", None)
+        begin = getattr(degraded_mod, "begin", None)
+        token = begin() if callable(begin) else None
+        try:
+            response = await call_next(request)
+            st = (store.degraded_status()
+                  if callable(getattr(store, "degraded_status", None))
+                  else {"degraded": False})
+        finally:
+            if token is not None:
+                degraded_mod.end(token)
+        response.headers["x-store-degraded"] = "true" if st.get("degraded") is True else "false"
         return response
 
     names = resources if resources is not None else filter_archived(store.list())
