@@ -25,9 +25,44 @@ def error_payload(code: str, message: str | None) -> dict[str, Any]:
     return {"error": {"code": code, "message": message}}
 
 
-def store_code(err: BaseException) -> str:
-    """store 错误的分类码：优先 err.code，缺省用错误类名，再缺省用通用码。"""
-    return getattr(err, "code", None) or type(err).__name__ or "STORE_ERROR"
+_KNOWN_STORE_PREFIXES = (
+    ('ERR_PERMISSION:', 'ERR_PERMISSION'),
+    # machine code 统一为 no_context（与 rust map_store_err / node mapError 同口径）
+    ('ERR_NO_CONTEXT:', 'no_context'),
+    ('ERR_TEXT2QUERY:', 'ERR_TEXT2QUERY'),
+    ('ERR_GQL_PARSE:', 'GQL_PARSE'),
+    ('ERR_NOT_FOUND:', 'not_found'),
+)
+
+
+def _prefix_store_code(text: Any) -> str | None:
+    """解析单段文本的 `ERR_*` 稳定前缀（与 rust errors.rs::store_code 同口径）。"""
+    if not isinstance(text, str):
+        return None
+    for prefix, cls in _KNOWN_STORE_PREFIXES:
+        if text == prefix[:-1]:  # 宿主只给去冒号的 machine 前缀（如 code='ERR_NOT_FOUND'）
+            return cls
+        if not text.startswith(prefix):
+            continue
+        rest = text[len(prefix):]
+        seg, sep, _ = rest.partition(':')
+        return seg if sep and seg else cls
+    return None
+
+
+def store_code(err: Any) -> str:
+    """store 错误的分类码：`ERR_*` 稳定前缀（err.code / message）优先；
+    其余保持既有口径（err.code → 类名 → STORE_ERROR），禁吞成通用错误。"""
+    if isinstance(err, str):
+        return _prefix_store_code(err) or err or 'STORE_ERROR'
+    code = getattr(err, 'code', None)
+    return (
+        _prefix_store_code(code)
+        or _prefix_store_code(str(err))
+        or code
+        or type(err).__name__
+        or "STORE_ERROR"
+    )
 
 
 def invalid_body(message: str) -> StoreApiError:

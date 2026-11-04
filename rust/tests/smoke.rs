@@ -123,6 +123,7 @@ async fn app() -> axum::Router {
             resources: None,
             id_field: "_id".into(),
             context_provider: Some(provider_ctx),
+            ..Default::default()
         },
     )
     .await

@@ -27,12 +27,17 @@ async fn fresh_router() -> axum::Router {
         }
     }))
     .expect("注册失败");
+    // §11.5 清单化：guest 写拒是显式 roleRules 配置，不再硬编码（旧断言曾依赖已废除的内置语义）
+    host.set_deny_write_roles(vec!["guest".to_string()])
+        .expect("设置角色策略");
 
     // SQL 后端物理 DDL（含 __present 哨兵列契约）
     let pool = host.sqlite_pool().expect("SQLite 源").clone();
     for ddl in [
-        "CREATE TABLE \"user\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, createdAt INTEGER, updatedAt INTEGER, \"__present\" TEXT)",
-        "CREATE TABLE \"user_deleted\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER, \"__present\" TEXT)",
+        // 物理列名走 dialect::physical_of（逻辑名 → snake_case）：camelCase 建表会令真实 INSERT
+        // 报 `table user has no column named created_at`。
+        "CREATE TABLE \"user\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, created_at INTEGER, updated_at INTEGER, \"__present\" TEXT)",
+        "CREATE TABLE \"user_deleted\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER, \"__present\" TEXT)",
     ] {
         sqlx::query(ddl).execute(&pool).await.expect("DDL 失败");
     }
@@ -51,6 +56,7 @@ async fn fresh_router() -> axum::Router {
             resources: None,
             id_field: "_id".into(),
             context_provider: Some(provider),
+            ..Default::default()
         },
     )
     .await

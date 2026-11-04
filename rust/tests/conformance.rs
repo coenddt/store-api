@@ -5,19 +5,54 @@
 #![cfg(feature = "rust-store")]
 
 use axum::body::Body;
-use axum::http::Request;
+use axum::http::{HeaderMap, Request};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use store_api_rs::adapter::RustStoreAdapter;
-use store_api_rs::{create_router, Options};
+use store_api_rs::{create_router, FileOut, FileResolver, Options, UploadOut, UploadResolver};
 use tower::ServiceExt;
+
+/// 用例级适配器选项（conformance/README.md：runner 据此装配 mock resolver）
+#[derive(serde::Deserialize, Default)]
+struct CaseOpts {
+    #[serde(default, rename = "fileResolver")]
+    file_resolver: bool,
+    #[serde(default, rename = "uploadResolver")]
+    upload_resolver: bool,
+    #[serde(default, rename = "fileResolverNotFound")]
+    file_resolver_not_found: bool,
+}
+
+fn mock_file_resolver(not_found: bool) -> FileResolver {
+    Arc::new(move |_h: &HeaderMap, _r: &Value, _id: &str| -> futures::future::BoxFuture<'_, Result<FileOut, String>> {
+        Box::pin(async move {
+            if not_found {
+                Err("ERR_RESOURCE_NOT_FOUND:资源无任何可读副本".to_string())
+            } else {
+                Ok(FileOut {
+                    body: b"mock-bytes".to_vec(),
+                    content_type: None,
+                    file_name: None,
+                })
+            }
+        })
+    })
+}
+
+fn mock_upload_resolver() -> UploadResolver {
+    Arc::new(|_h: &HeaderMap, _r: &Value, _id: &str| -> futures::future::BoxFuture<'_, Result<UploadOut, String>> {
+        Box::pin(async { Ok(UploadOut { reference: "ref://mock".into() }) })
+    })
+}
 
 /// 与 cases/*.json 的格式契约一致（node/go runner 同构）
 #[derive(serde::Deserialize)]
 struct ConformanceCase {
     name: String,
     resource: String,
+    #[serde(default)]
+    opts: CaseOpts,
     steps: Vec<ConformanceStep>,
 }
 
@@ -28,7 +63,7 @@ struct ConformanceStep {
     #[serde(default)]
     body: Option<Value>,
     #[serde(default)]
-    use_created_id: bool,
+    headers: std::collections::HashMap<String, String>,
     #[serde(default)]
     expect: Expect,
 }
@@ -43,7 +78,7 @@ struct Expect {
     data_keys: Vec<String>,
 }
 
-async fn fresh_router(resource: &str) -> axum::Router {
+async fn fresh_router(resource: &str, opts: &CaseOpts) -> axum::Router {
     let host = Arc::new(
         rust_store::Store::connect_sqlite("sqlite::memory:")
             .await
@@ -55,14 +90,18 @@ async fn fresh_router(resource: &str) -> axum::Router {
         "idPrefix": "u",
         "fields": {
             "name": { "type": "string" },
-            "age": { "type": "number" }
+            "age": { "type": "number" },
+            "file": { "type": "string" }
         }
     }))
     .expect("注册失败");
     let pool = host.sqlite_pool().expect("SQLite 源").clone();
     for ddl in [
-        &format!("CREATE TABLE \"{resource}\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, createdAt INTEGER, updatedAt INTEGER, \"__present\" TEXT)"),
-        &format!("CREATE TABLE \"{resource}_deleted\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER, \"__present\" TEXT)"),
+        // 物理列名走 dialect::physical_of（逻辑名 → snake_case），与宿主持久化口径一致；
+        // 用 camelCase 建表会让真实 INSERT 报 `table user has no column named created_at`。
+        // `file` 承载 file 子路由的资源引用（schema 未声明但用例会写入/回写）。
+        &format!("CREATE TABLE \"{resource}\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, file TEXT, created_at INTEGER, updated_at INTEGER, \"__present\" TEXT)"),
+        &format!("CREATE TABLE \"{resource}_deleted\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, file TEXT, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER, \"__present\" TEXT)"),
     ] {
         sqlx::query(ddl).execute(&pool).await.expect("DDL 失败");
     }
@@ -71,7 +110,22 @@ async fn fresh_router(resource: &str) -> axum::Router {
         "/api",
         create_router(
             Arc::new(RustStoreAdapter::new(host)),
-            Options { resources: None, id_field: "_id".into(), context_provider: None },
+            Options {
+                resources: None,
+                id_field: "_id".into(),
+                context_provider: None,
+                file_resolver: if opts.file_resolver || opts.file_resolver_not_found {
+                    Some(mock_file_resolver(opts.file_resolver_not_found))
+                } else {
+                    None
+                },
+                upload_resolver: if opts.upload_resolver {
+                    Some(mock_upload_resolver())
+                } else {
+                    None
+                },
+                ..Default::default()
+            },
         )
         .await,
     )
@@ -111,17 +165,27 @@ async fn conformance_cases() {
     for path in &paths {
         let raw = std::fs::read_to_string(path).expect("读用例");
         let c: ConformanceCase = serde_json::from_str(&raw).expect("用例 JSON 解析");
-        let app = fresh_router(&c.resource).await;
+        let app = fresh_router(&c.resource, &c.opts).await;
         let mut created_id = String::new();
 
         for (i, step) in c.steps.iter().enumerate() {
             let uri = normalize_path(&step.path.replace("{id}", &created_id));
             let mut builder = Request::builder().method(step.method.as_str()).uri(&uri);
-            if step.body.is_some() {
+            // `raw:<bytes>` 是上传用例的原始字节体约定；其余 JSON body 原样序列化
+            let is_raw = matches!(&step.body, Some(Value::String(s)) if s.starts_with("raw:"));
+            let body_bytes = match &step.body {
+                Some(Value::String(s)) if s.starts_with("raw:") => s[4..].as_bytes().to_vec(),
+                Some(v) => v.to_string().into_bytes(),
+                None => Vec::new(),
+            };
+            if step.body.is_some() && !is_raw {
                 builder = builder.header("content-type", "application/json");
             }
+            for (k, v) in &step.headers {
+                builder = builder.header(k.as_str(), v.as_str());
+            }
             let req = builder
-                .body(Body::from(step.body.as_ref().map(|v| v.to_string()).unwrap_or_default()))
+                .body(Body::from(body_bytes))
                 .expect("构造请求");
             let res = app.clone().oneshot(req).await.expect("请求");
             let status = res.status().as_u16();

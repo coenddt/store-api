@@ -47,3 +47,24 @@ test('映射矩阵：Other 档 → 500 透传原文（禁静默）', () => {
   assert.equal(r.body.error.code, 'CONN_TIMEOUT');
   assert.equal(r.body.error.message, '连接超时');
 });
+
+test('跨端 code 口径：ERR_* 前缀与 rust store_code 同输入同 code', () => {
+  const cases = [
+    ['ERR_NOT_FOUND:目标记录不存在（写条件未命中任何行，_id 不存在或已被删除）', 'not_found'],
+    ['ERR_NOT_FOUND', 'not_found'],
+    ['ERR_NO_CONTEXT:缺少请求上下文', 'no_context'],
+    ['ERR_NO_CONTEXT', 'no_context'],
+    ['ERR_PERMISSION:RBAC:无权写入', 'RBAC'],
+    ['ERR_TEXT2QUERY:档位不支持', 'ERR_TEXT2QUERY'],
+    ['ERR_GQL_PARSE:意外的 token', 'GQL_PARSE'],
+  ];
+  for (const [message, code] of cases) {
+    const r = mapError(new Error(message), PermissionError);
+    assert.equal(r.body.error.code, code, `${message} ⇒ ${code}`);
+    assert.equal(r.body.error.message === null, false);
+  }
+  // 未知错误保持原样，不吞成通用错误
+  const unknown = new Error('连接超时');
+  unknown.code = 'CONN_TIMEOUT';
+  assert.equal(mapError(unknown, PermissionError).body.error.code, 'CONN_TIMEOUT');
+});

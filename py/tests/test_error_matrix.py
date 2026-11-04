@@ -50,3 +50,22 @@ def test_matrix_other_to_500():
     assert r.status_code == 500
     assert r.code == "CONN_TIMEOUT"
     assert r.message == "连接超时"
+
+
+def test_cross_language_err_prefix_code_matches_rust():
+    """跨端 code 口径：同一 `ERR_*` 输入与 rust store_code 同 code（未知错误保持原样）。"""
+    cases = [
+        ("ERR_NOT_FOUND:目标记录不存在（写条件未命中任何行，_id 不存在或已被删除）", "not_found"),
+        ("ERR_NOT_FOUND", "not_found"),
+        ("ERR_NO_CONTEXT:缺少请求上下文", "no_context"),
+        ("ERR_NO_CONTEXT", "no_context"),
+        ("ERR_PERMISSION:RBAC:无权写入", "RBAC"),
+        ("ERR_TEXT2QUERY:档位不支持", "ERR_TEXT2QUERY"),
+        ("ERR_GQL_PARSE:意外的 token", "GQL_PARSE"),
+    ]
+    for message, code in cases:
+        r = map_error(Exception(message), PermissionError)
+        assert r.code == code, f"{message} ⇒ {code}"
+
+    unknown = _err("连接超时", "CONN_TIMEOUT")
+    assert map_error(unknown, PermissionError).code == "CONN_TIMEOUT"

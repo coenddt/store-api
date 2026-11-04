@@ -10,9 +10,47 @@ function errorPayload(code, message) {
   return { error: { code, message: message == null ? null : message } };
 }
 
-/** store 错误的分类码：优先 err.code，缺省用错误类名，再缺省用通用码 */
+/**
+ * core 稳定前缀 → machine code（与 rust errors.rs::store_code 同口径）：
+ * 有 `:seg` 取 seg；无 seg 取 class。
+ */
+const KNOWN_STORE_PREFIXES = [
+  ['ERR_PERMISSION:', 'ERR_PERMISSION'],
+  // machine code 统一为 no_context（与 rust map_store_err / py map_error 同口径）
+  ['ERR_NO_CONTEXT:', 'no_context'],
+  ['ERR_TEXT2QUERY:', 'ERR_TEXT2QUERY'],
+  ['ERR_GQL_PARSE:', 'GQL_PARSE'],
+  ['ERR_NOT_FOUND:', 'not_found'],
+];
+
+/** 解析单段文本的 `ERR_*` 稳定前缀；无匹配返回 null。 */
+function prefixStoreCode(text) {
+  if (typeof text !== 'string') return null;
+  for (const [prefix, cls] of KNOWN_STORE_PREFIXES) {
+    // 宿主可能只给去冒号的 machine 前缀（如 err.code = 'ERR_NOT_FOUND'）
+    if (text === prefix.slice(0, -1)) return cls;
+    if (!text.startsWith(prefix)) continue;
+    const rest = text.slice(prefix.length);
+    const idx = rest.indexOf(':');
+    if (idx >= 0 && rest.slice(0, idx)) return rest.slice(0, idx);
+    return cls;
+  }
+  return null;
+}
+
+/**
+ * store 错误的分类码：`ERR_*` 稳定前缀（err.code / err.message）优先；
+ * 其余保持既有口径（err.code → 类名 → STORE_ERROR），禁吞成通用错误。
+ */
 function storeCode(err) {
-  return (err && err.code) || (err && err.name) || 'STORE_ERROR';
+  const raw = typeof err === 'string' ? err : null;
+  const code = raw || (err && err.code);
+  const message = raw || (err && err.message);
+  return prefixStoreCode(code)
+    || prefixStoreCode(message)
+    || code
+    || (err && err.name)
+    || 'STORE_ERROR';
 }
 
 function invalidBody(message) {

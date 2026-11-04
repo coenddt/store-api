@@ -1,6 +1,7 @@
 {
   "name": "users-file-upload",
   "resource": "user",
+  "opts": { "uploadResolver": true },
   "steps": [
     { "method": "POST", "path": "/api/user", "body": { "name": "alice", "file": "hello" }, "expect": { "status": 201 }, "note": "前置：建记录" },
     { "method": "POST", "path": "/api/user/{id}/file", "useCreatedId": true, "body": "raw:bytes", "headers": { "content-type": "application/octet-stream" }, "expect": { "status": 200, "dataKeys": ["file"] }, "note": "注入 uploadResolver 时：200 + 回写" },

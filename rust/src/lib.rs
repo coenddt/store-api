@@ -75,6 +75,28 @@ pub fn filter_archived(names: Vec<String>) -> Vec<String> {
 pub type ContextProvider =
     Arc<dyn for<'a> Fn(&'a HeaderMap) -> BoxFuture<'a, Result<Option<Value>, String>> + Send + Sync>;
 
+/// 下载 resolver 产物（spec/05：`contentType` / `fileName` 由 resolver 决定，皮不推断 MIME）
+#[derive(Debug, Clone)]
+pub struct FileOut {
+    pub body: Vec<u8>,
+    pub content_type: Option<String>,
+    pub file_name: Option<String>,
+}
+
+/// 上传 resolver 产物（`ref` 回写到记录字段；缺省视为未实现 → 500 透传，禁静默）
+#[derive(Debug, Clone)]
+pub struct UploadOut {
+    pub reference: String,
+}
+
+/// 下载接缝（spec/03 决策 D）：未注入 ⇒ 501 `FILE_NOT_CONFIGURED`
+pub type FileResolver =
+    Arc<dyn for<'a> Fn(&'a HeaderMap, &'a Value, &'a str) -> BoxFuture<'a, Result<FileOut, String>> + Send + Sync>;
+
+/// 上传接缝：未注入 ⇒ 501 `UPLOAD_NOT_CONFIGURED`
+pub type UploadResolver =
+    Arc<dyn for<'a> Fn(&'a HeaderMap, &'a Value, &'a str) -> BoxFuture<'a, Result<UploadOut, String>> + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct Options {
     /// 显式资源名；缺省取 store.list() 并过滤归档表
@@ -82,6 +104,12 @@ pub struct Options {
     /// 单条路由主键字段名（spec/01，三端一致，默认 '_id'）
     pub id_field: String,
     pub context_provider: Option<ContextProvider>,
+    /// file 子路由缺省字段点路径（spec/02 `field` 的缺省回落，默认 'file'）
+    pub file_field: Option<String>,
+    pub file_resolver: Option<FileResolver>,
+    pub upload_resolver: Option<UploadResolver>,
+    /// 上传字节体上限（默认 32 MiB，超限 413）
+    pub upload_limit: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -90,6 +118,10 @@ struct AppState {
     resources: Vec<String>,
     id_field: Arc<str>,
     context_provider: Option<ContextProvider>,
+    file_field: Arc<str>,
+    file_resolver: Option<FileResolver>,
+    upload_resolver: Option<UploadResolver>,
+    upload_limit: usize,
 }
 
 /// 生成 RESTful Router（前缀由调用方 `.nest("/api", router)` 自行控制，与 fastify prefix 机制对齐）
@@ -103,10 +135,18 @@ pub async fn create_router(store: Arc<dyn Store>, opts: Options) -> Router {
         resources,
         id_field: Arc::from(opts.id_field.as_str()),
         context_provider: opts.context_provider,
+        file_field: Arc::from(opts.file_field.unwrap_or_else(|| "file".into()).as_str()),
+        file_resolver: opts.file_resolver,
+        upload_resolver: opts.upload_resolver,
+        upload_limit: opts.upload_limit.unwrap_or(32 * 1024 * 1024),
     };
     Router::new()
         .route("/{resource}", get(list_resource).post(create_resource))
         .route("/{resource}/{id}", get(get_one).patch(update_one).delete(delete_one))
+        .route(
+            "/{resource}/{id}/file",
+            get(download_file).post(upload_file),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), inject_context))
         .with_state(state)
 }
@@ -291,6 +331,186 @@ async fn delete_one(
     let condition = json!({ state.id_field.as_ref(): id });
     match state.store.remove(&resource, &condition, rc.0).await {
         Ok(out) => ok_json(json!({ "data": out })),
+        Err(e) => store_err_response(&state, &e),
+    }
+}
+
+/// spec/02：`field` 为点路径，缺省回落适配器选项 `file_field`（空串视同未传）
+fn field_path_of(raw: Option<&str>, fallback: &str) -> String {
+    raw.and_then(|s| {
+        form_urlencoded::parse(s.as_bytes())
+            .find(|(k, _)| k == "field")
+            .map(|(_, v)| v.to_string())
+    })
+    .filter(|s| !s.is_empty())
+    .unwrap_or_else(|| fallback.to_string())
+}
+
+/// 点路径取值：任一段缺失 ⇒ None（spec/02：视同「文件字段为空」）
+fn pick_field<'a>(rec: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut cur = rec;
+    for seg in path.split('.') {
+        cur = cur.get(seg)?;
+        if cur.is_null() {
+            return None;
+        }
+    }
+    Some(cur)
+}
+
+/// file 子路由投影：schema 标量字段 ∪ `field` 点路径根字段
+/// （schema 未声明资源引用字段时仍能取到，与 core「未声明字段按裸列名宽松处理」一致）
+async fn file_projection(state: &AppState, resource: &str, field_path: &str) -> String {
+    let mut fields = state.store.schema_fields(resource).await;
+    let root = field_path.split('.').next().unwrap_or(field_path);
+    if !root.is_empty() && !fields.iter().any(|f| f == root) {
+        fields.push(root.to_string());
+    }
+    if fields.is_empty() {
+        String::new()
+    } else {
+        format!(" {{ {} }}", fields.join(", "))
+    }
+}
+
+/// `GET /{resource}/{id}/file`（spec/03 判定顺序：未注入 resolver 501 → 记录不存在 404
+/// → 字段为空 404 → resolver 错误按 core 前缀分类 → 字节流）
+async fn download_file(
+    State(state): State<AppState>,
+    Path((resource, id)): Path<(String, String)>,
+    RawQuery(raw): RawQuery,
+    Extension(rc): Extension<RequestCtx>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(resolver) = state.file_resolver.clone() else {
+        return StoreApiError::file_not_configured(&format!(
+            "GET /{resource}/{id}/file 未注入 fileResolver"
+        ))
+        .into_response();
+    };
+    if let Err(e) = resolve_resource(&state, &resource) {
+        return e.into_response();
+    }
+    let field_path = field_path_of(raw.as_deref(), &state.file_field);
+    let mut params = Map::new();
+    params.insert("c0".into(), json!({ state.id_field.as_ref(): id }));
+    let proj = file_projection(&state, &resource, &field_path).await;
+    let gql = format!("{resource}($condition: @c0){proj}");
+    let rec = match state.store.query_one(&gql, &params, rc.0).await {
+        Ok(Some(doc)) => doc,
+        Ok(None) => {
+            return StoreApiError::not_found(format!(
+                "记录不存在: {}={id}",
+                state.id_field
+            ))
+            .into_response()
+        }
+        Err(e) => return store_err_response(&state, &e),
+    };
+    if pick_field(&rec, &field_path).is_none() {
+        return StoreApiError::not_found(format!("文件不存在: {field_path}={id}")).into_response();
+    }
+    let out = match resolver(&headers, &rec, &id).await {
+        Ok(o) => o,
+        // resolver 抛 ERR_RESOURCE_NOT_FOUND: ⇒ 404（map_store_err 分类）；其余 500 透传
+        Err(e) => return store_err_response(&state, &e),
+    };
+    let mut res = Response::new(axum::body::Body::from(out.body));
+    let ct = out.content_type.unwrap_or_else(|| "application/octet-stream".into());
+    let file_name = out.file_name.unwrap_or_else(|| "file".into());
+    let ct = match axum::http::HeaderValue::from_str(&ct) {
+        Ok(v) => v,
+        Err(e) => {
+            return StoreApiError::invalid_param(format!("contentType 不是合法 header 值: {e}"))
+                .into_response()
+        }
+    };
+    let cd = match axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{file_name}\"")) {
+        Ok(v) => v,
+        Err(e) => {
+            return StoreApiError::invalid_param(format!("fileName 不是合法 header 值: {e}"))
+                .into_response()
+        }
+    };
+    res.headers_mut().insert(axum::http::header::CONTENT_TYPE, ct);
+    res.headers_mut().insert(axum::http::header::CONTENT_DISPOSITION, cd);
+    res
+}
+
+/// `POST /{resource}/{id}/file`（spec/03 判定顺序：未注入 resolver 501 → 空体 400 /
+/// 超限 413 → 记录不存在 404 → resolver 未回 ref 500 → 回写 update）
+async fn upload_file(
+    State(state): State<AppState>,
+    Path((resource, id)): Path<(String, String)>,
+    RawQuery(raw): RawQuery,
+    Extension(rc): Extension<RequestCtx>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(resolver) = state.upload_resolver.clone() else {
+        return StoreApiError::upload_not_configured(&format!(
+            "POST /{resource}/{id}/file 未注入 uploadResolver"
+        ))
+        .into_response();
+    };
+    if let Err(e) = resolve_resource(&state, &resource) {
+        return e.into_response();
+    }
+    // 多读 1 字节即可判定超限；read 失败的唯一成因是 length limit
+    let limit = state.upload_limit;
+    let body = match axum::body::to_bytes(request.into_body(), limit + 1).await {
+        Ok(b) => b,
+        Err(e) => {
+            return StoreApiError::too_large(&format!("上传字节体超过上限 {limit} 字节: {e}"))
+                .into_response()
+        }
+    };
+    if body.is_empty() {
+        return StoreApiError::empty_body(&format!("上传请求体为空: POST /{resource}/{id}/file"))
+            .into_response();
+    }
+    if body.len() > limit {
+        return StoreApiError::too_large(&format!("上传字节体 {} 字节超过上限 {limit} 字节", body.len()))
+            .into_response();
+    }
+    let field_path = field_path_of(raw.as_deref(), &state.file_field);
+    let mut params = Map::new();
+    params.insert("c0".into(), json!({ state.id_field.as_ref(): id }));
+    let proj = file_projection(&state, &resource, &field_path).await;
+    let gql = format!("{resource}($condition: @c0){proj}");
+    let rec = match state.store.query_one(&gql, &params, rc.0.clone()).await {
+        Ok(Some(doc)) => doc,
+        Ok(None) => {
+            return StoreApiError::not_found(format!(
+                "记录不存在: {}={id}",
+                state.id_field
+            ))
+            .into_response()
+        }
+        Err(e) => return store_err_response(&state, &e),
+    };
+    let out = match resolver(&headers, &rec, &id).await {
+        Ok(o) => o,
+        Err(e) => return store_err_response(&state, &e),
+    };
+    if out.reference.is_empty() {
+        // 禁静默：resolver 未给出引用即请求期显式失败
+        return StoreApiError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "STORE_ERROR".into(),
+            message: Some(format!(
+                "uploadResolver 未返回 ref: {resource}({}={id})",
+                state.id_field
+            )),
+        }
+        .into_response();
+    }
+    // 回写走 update 语义 → RBAC 写权限自动生效；键用点路径原样（store 非操作符键自动包 $set）
+    let mut data = Map::new();
+    data.insert(field_path.clone(), json!(out.reference));
+    let condition = json!({ state.id_field.as_ref(): id });
+    match state.store.update(&resource, &condition, &Value::Object(data), rc.0).await {
+        Ok(doc) => ok_json(json!({ "data": doc })),
         Err(e) => store_err_response(&state, &e),
     }
 }
