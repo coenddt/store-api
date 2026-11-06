@@ -17,5 +17,7 @@
   不再先 `await request.body()` 把超大请求整读入内存；`uploadLimit`（默认 32MB）从「事后比较」变为真正的内存防线。
 - **node 非法 / 空 JSON 请求体 → 400 `INVALID_BODY`**：映射 Fastify
   `FST_ERR_CTP_INVALID_JSON_BODY` / `FST_ERR_CTP_EMPTY_JSON_BODY`，不再落 500。
+- **下载 `Content-Disposition` 清洗 `fileName` 的 CR/LF**：py 实测可把 `\r\n` 原样写入响应头（可拆出额外头），
+  node 实测会 500 `ERR_INVALID_CHAR`；两实现统一把 CR/LF 替换为空格，文件名其余内容保持不变。
 - **上传 `?field=` 增加 schema 可写白名单**：仅允许 schema 字段树中的标量 `string` / `file`（`object` 下钻为 `a.b`），
   排除 `_id`、`$` 前缀与原型污染段；未命中 → 400 `INVALID_PARAM` 并给出明确 message。下载（读）不受限。

@@ -8,6 +8,7 @@ from __future__ import annotations
 import functools
 import inspect
 import json
+import re
 from typing import Any, Callable
 
 from fastapi import FastAPI, Request
@@ -376,10 +377,13 @@ def _register_resource(
         out = file_resolver(request, rec, rid)
         if inspect.isawaitable(out):
             out = await out
+        # 响应头注入防线（待核实项实测结论）：fileName 的 CR/LF 必须清洗，否则
+        # Content-Disposition 可被拆分为额外响应头（py 侧实测可注入 X-Injected）。
+        safe_name = re.sub(r"[\r\n]", " ", str(out.get("fileName") or "file"))
         return Response(
             content=out["body"],
             media_type=out.get("contentType", "application/octet-stream"),
-            headers={"content-disposition": f'attachment; filename="{out.get("fileName", "file")}"'},
+            headers={"content-disposition": f'attachment; filename="{safe_name}"'},
         )
 
     @app.post(base + "/{rid}/file")

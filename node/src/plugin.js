@@ -281,7 +281,10 @@ async function storeApiPlugin(fastify, opts) {
       if (raw == null) throw notFound(`文件不存在: ${fp}=${req.params.id}`);
       const out = await fileResolver(req, rec, req.params.id);
       reply.header('content-type', out.contentType || 'application/octet-stream');
-      reply.header('content-disposition', `attachment; filename="${out.fileName || 'file'}"`);
+      // 响应头注入防线：fileName 的 CR/LF 必须清洗（Node 会抛 ERR_INVALID_CHAR 导致 500，
+      // 部分代理则可能被拆分为额外响应头）。
+      const safeName = String(out.fileName || 'file').replace(/[\r\n]/g, ' ');
+      reply.header('content-disposition', `attachment; filename="${safeName}"`);
       return out.body;
     }));
 
