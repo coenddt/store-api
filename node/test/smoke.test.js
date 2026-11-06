@@ -32,7 +32,7 @@ class MockStore {
   list() { return ['user', 'userDeleted']; }
 
   get(name) {
-    return name === 'user' ? { name: 'user', fields: { name: { type: 'string' }, age: { type: 'number' } } } : null;
+    return name === 'user' ? { name: 'user', fields: { name: { type: 'string' }, age: { type: 'number' }, images: { type: 'object', fields: { full: { type: 'string' } } } } } : null;
   }
 
   async query(gql, params) {
@@ -136,11 +136,11 @@ test('CRUD 全链路 + GQL 透传', async (t) => {
   const id = created.json().data._id;
   const listedNoQ = await app.inject({ method: 'GET', url: '/api/user' });
   assert.equal(listedNoQ.statusCode, 200);
-  assert.equal(store.lastQuery.gql, 'user { name, age }'); // 无 q → 适配器生成全字段投影（spec/02）
+  assert.equal(store.lastQuery.gql, 'user { name, age, images }'); // 无 q → 适配器生成全字段投影（spec/02）
 
   const got = await app.inject({ method: 'GET', url: `/api/user/${id}` });
   assert.equal(got.statusCode, 200);
-  assert.equal(store.lastQuery.gql, 'user($condition: @c0) { name, age }');
+  assert.equal(store.lastQuery.gql, 'user($condition: @c0) { name, age, images }');
   assert.deepEqual(store.lastQuery.params, { c0: { _id: id } });
 
   const patched = await app.inject({ method: 'PATCH', url: `/api/user/${id}`, payload: { age: 2 } });
@@ -345,6 +345,50 @@ test('上传/下载 field 点路径寻址（spec/02）', async () => {
   });
   assert.equal(ok.statusCode, 200);
   assert.equal(ok.json().data.images.full, 'new-ref');
+});
+
+test('非法 JSON / 空 JSON 请求体 → 400 INVALID_BODY（parser 错误映射，spec/03 第 2 层）', async () => {
+  const app = await buildApp(new MockStore());
+
+  const invalid = await app.inject({
+    method: 'POST', url: '/api/user',
+    headers: { 'content-type': 'application/json' }, payload: '{"name":',
+  });
+  assert.equal(invalid.statusCode, 400);
+  assert.equal(invalid.json().error.code, 'INVALID_BODY');
+  assert.ok(invalid.json().error.message); // 原始 parser 文案透传，禁空
+
+  const empty = await app.inject({
+    method: 'POST', url: '/api/user',
+    headers: { 'content-type': 'application/json' }, payload: '',
+  });
+  assert.equal(empty.statusCode, 400);
+  assert.equal(empty.json().error.code, 'INVALID_BODY');
+  assert.ok(empty.json().error.message);
+});
+
+test('上传 ?field= 白名单：schema 未声明 / 主键 / 非 string|file ⇒ 400 INVALID_PARAM（决策 S3）', async () => {
+  const store = new MockStore();
+  const created = await buildApp(store).then((a) => a.inject({ method: 'POST', url: '/api/user', payload: { name: 'a', age: 1 } }));
+  const id = created.json().data._id;
+  const app = await buildApp(store, { uploadResolver: async () => ({ ref: 'r' }) });
+
+  for (const field of ['ownerId', 'password', '_id', 'age', '__proto__', 'images.nope']) {
+    const res = await app.inject({
+      method: 'POST', url: `/api/user/${id}/file?field=${encodeURIComponent(field)}`,
+      headers: { 'content-type': 'application/octet-stream' }, payload: Buffer.from('bytes'),
+    });
+    assert.equal(res.statusCode, 400, field);
+    assert.equal(res.json().error.code, 'INVALID_PARAM', field);
+    assert.ok(res.json().error.message.includes('白名单'), field); // 明确 message
+  }
+
+  // 白名单内（含 object 下钻）仍可写
+  const ok = await app.inject({
+    method: 'POST', url: `/api/user/${id}/file?field=images.full`,
+    headers: { 'content-type': 'application/octet-stream' }, payload: Buffer.from('bytes'),
+  });
+  assert.equal(ok.statusCode, 200);
 });
 
 // ── R2-04：policyProvider 请求入口作用域化（与 py tests/test_smoke.py 同构，双端 parity）──

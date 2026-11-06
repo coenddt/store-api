@@ -5,6 +5,7 @@ package storeapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,23 @@ import (
 
 	"github.com/coenddt/go-store"
 )
+
+// TestWriteErrorNotFoundIs404 锁定 spec/03 v2 收口：写探针未命中（ERR_NOT_FOUND:）⇒ 404 + not_found。
+func TestWriteErrorNotFoundIs404(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeError(rec, errors.New("ERR_NOT_FOUND:目标记录不存在"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("ERR_NOT_FOUND 应 404, got %d", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应非 JSON: %v", err)
+	}
+	errObj, _ := body["error"].(map[string]any)
+	if errObj["code"] != "not_found" || errObj["message"] != "ERR_NOT_FOUND:目标记录不存在" {
+		t.Fatalf("code/message 不符: %v", body)
+	}
+}
 
 // freshServer 起一个真实 SQLite（内存库）+ 已注册 schema 的 REST 服务。
 func freshServer(t *testing.T, opts Options) (*httptest.Server, *gostore.Store) {

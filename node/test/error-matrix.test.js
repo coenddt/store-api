@@ -48,6 +48,29 @@ test('映射矩阵：Other 档 → 500 透传原文（禁静默）', () => {
   assert.equal(r.body.error.message, '连接超时');
 });
 
+test('映射矩阵：ERR_NOT_FOUND 写探针未命中 → 404（code=not_found，message 原样）', () => {
+  const message = 'ERR_NOT_FOUND:目标记录不存在（写条件未命中任何行，_id 不存在或已被删除）';
+  const r = mapError(new Error(message), PermissionError);
+  assert.equal(r.statusCode, 404);
+  assert.equal(r.body.error.code, 'not_found');
+  assert.equal(r.body.error.message, message);
+  // 宿主只给 machine code（无前缀 message）同样 404
+  const byCode = new Error('not found');
+  byCode.code = 'not_found';
+  assert.equal(mapError(byCode, PermissionError).statusCode, 404);
+});
+
+test('映射矩阵：非法/空 JSON 请求体（Fastify parser 错误）→ 400 INVALID_BODY', () => {
+  for (const code of ['FST_ERR_CTP_INVALID_JSON_BODY', 'FST_ERR_CTP_EMPTY_JSON_BODY']) {
+    const err = new Error('body parse failed');
+    err.code = code;
+    const r = mapError(err, PermissionError);
+    assert.equal(r.statusCode, 400, code);
+    assert.equal(r.body.error.code, 'INVALID_BODY', code);
+    assert.equal(r.body.error.message, 'body parse failed');
+  }
+});
+
 test('跨端 code 口径：ERR_* 前缀与 rust store_code 同输入同 code', () => {
   const cases = [
     ['ERR_NOT_FOUND:目标记录不存在（写条件未命中任何行，_id 不存在或已被删除）', 'not_found'],

@@ -52,6 +52,17 @@ def test_matrix_other_to_500():
     assert r.message == "连接超时"
 
 
+def test_matrix_not_found_probe_to_404():
+    """写探针未命中（ERR_NOT_FOUND:）⇒ 404 + code=not_found，message 原样（v2 收口）。"""
+    message = "ERR_NOT_FOUND:目标记录不存在（写条件未命中任何行，_id 不存在或已被删除）"
+    r = map_error(Exception(message), PermissionError)
+    assert r.status_code == 404
+    assert r.code == "not_found"
+    assert r.message == message
+    # 宿主只给 machine code（无前缀 message）同样 404
+    assert map_error(_err("not found", "not_found"), PermissionError).status_code == 404
+
+
 def test_cross_language_err_prefix_code_matches_rust():
     """跨端 code 口径：同一 `ERR_*` 输入与 rust store_code 同 code（未知错误保持原样）。"""
     cases = [

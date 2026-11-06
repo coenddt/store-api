@@ -51,7 +51,14 @@ class MockStore:
 
     def get(self, name):
         if name == "user":
-            return {"name": "user", "fields": {"name": {"type": "string"}, "age": {"type": "number"}}}
+            return {
+                "name": "user",
+                "fields": {
+                    "name": {"type": "string"},
+                    "age": {"type": "number"},
+                    "images": {"type": "object", "fields": {"full": {"type": "string"}}},
+                },
+            }
         raise KeyError(name)
 
     def set_context(self, ctx):
@@ -166,11 +173,11 @@ def test_crud_full_chain():
     # 无 q → 适配器生成全字段投影（spec/02）
     listed_no_q = client.get("/api/user")
     assert listed_no_q.status_code == 200
-    assert store.last_query == ("user { name, age }", {})
+    assert store.last_query == ("user { name, age, images }", {})
 
     got = client.get(f"/api/user/{rid}")
     assert got.status_code == 200
-    assert store.last_query == ("user($condition: @c0) { name, age }", {"c0": {"_id": rid}})
+    assert store.last_query == ("user($condition: @c0) { name, age, images }", {"c0": {"_id": rid}})
 
     patched = client.patch(f"/api/user/{rid}", json={"age": 2})
     assert patched.status_code == 200
@@ -359,6 +366,69 @@ def test_upload_route_and_field():
                           headers={"content-type": "application/octet-stream"})
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_upload_field_whitelist():
+    """上传 ?field= 白名单：schema 未声明 / 主键 / 非 string|file ⇒ 400 INVALID_PARAM（决策 S3）。"""
+    store = MockStore()
+    rid = TestClient(build_app(store)).post("/api/user", json={"name": "a", "age": 1}).json()["data"]["_id"]
+
+    async def _ur(request, rec, i):
+        return {"ref": "sha1abc"}
+
+    client = TestClient(build_app(store, upload_resolver=_ur))
+    for field in ["ownerId", "password", "_id", "age", "__proto__", "images.nope"]:
+        res = client.post(f"/api/user/{rid}/file?field={field}", content=b"bytes",
+                          headers={"content-type": "application/octet-stream"})
+        assert res.status_code == 400, field
+        assert res.json()["error"]["code"] == "INVALID_PARAM", field
+        assert "白名单" in res.json()["error"]["message"], field  # 明确 message
+
+    # 白名单内（含 object 下钻）仍可写
+    ok = client.post(f"/api/user/{rid}/file?field=images.full", content=b"bytes",
+                     headers={"content-type": "application/octet-stream"})
+    assert ok.status_code == 200
+
+
+class _FakeStreamRequest:
+    """只暴露 _read_upload_body 需要的面；body() 被调用即证明仍在整读（决策 S1 回归）。"""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+        self.method = "POST"
+        self.url = SimpleNamespace(path="/api/user/u1/file")
+        self.consumed = 0
+
+    async def body(self):
+        raise AssertionError("禁止先 await request.body() 整读上传体")
+
+    async def stream(self):
+        for c in self._chunks:
+            self.consumed += 1
+            yield c
+
+
+def test_upload_body_streams_and_aborts_on_limit():
+    """S1：边读边限流——超限立即中断，不消费后续分块，也不整读入内存。"""
+    import asyncio
+
+    from store_api_py.app import _read_upload_body
+    from store_api_py.errors import StoreApiError
+
+    req = _FakeStreamRequest([b"ab", b"cd", b"ef", b"gh"])
+    with pytest.raises(StoreApiError) as ei:
+        asyncio.run(_read_upload_body(req, 4))
+    assert ei.value.status_code == 413
+    assert ei.value.code == "UPLOAD_TOO_LARGE"
+    assert req.consumed == 3  # 第 3 块即越限中断，第 4 块未被读取
+
+    req_ok = _FakeStreamRequest([b"ab", b"cd"])
+    assert asyncio.run(_read_upload_body(req_ok, 4)) == b"abcd"
+
+    req_empty = _FakeStreamRequest([])
+    with pytest.raises(StoreApiError) as ei2:
+        asyncio.run(_read_upload_body(req_empty, 4))
+    assert ei2.value.code == "EMPTY_BODY"
 
 
 # ── R2-04：policy_provider 请求入口作用域化（与 node test/smoke.test.js 同构，双端 parity）──
