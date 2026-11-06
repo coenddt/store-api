@@ -123,10 +123,19 @@ async function storeApiPlugin(fastify, opts) {
     return fieldPath.split('.').reduce((acc, k) => (acc == null ? undefined : acc[k]), rec);
   }
 
-  // 请求级字段路径：?field= 优先，缺省回落插件级 fileField（spec/02-params.md）
-  function fieldPathOf(req) {
+  // 请求级字段路径：?field= 优先，缺省回落插件级 fileField（spec/02-params.md）。
+  // 上传（写）必须命中 schema 白名单；下载（读）不限制（决策 S3）。
+  function fieldPathOf(req, allowed) {
     const f = req.query && req.query.field;
-    return typeof f === 'string' && f !== '' ? f : fileField;
+    if (!(typeof f === 'string' && f !== '')) return fileField;
+    if (allowed && !allowed.has(f)) {
+      const err = new Error(
+        `field 不在可写字段白名单: ${f}；允许: ${[...allowed].sort().join(', ') || '(无)'}`,
+      );
+      err.code = 'INVALID_PARAM';
+      throw err;
+    }
+    return f;
   }
 
   // 上传字节体（parser 已缓冲为 Buffer；非 Buffer / 空 → 400 EMPTY_BODY；超限 → 413 UPLOAD_TOO_LARGE）
@@ -204,10 +213,37 @@ async function storeApiPlugin(fastify, opts) {
    * 从 store 元数据生成显式投影串（` { f1, f2 }`）。
    * store.get(name) 缺失 / fields 为空 → 空串（无投影，data 仅 _id——上游 schema 定义不完整的显式后果）。
    */
-  function schemaProjection(store, name) {
+  function schemaFields(store, name) {
     const meta = typeof store.get === 'function' ? store.get(name) : null;
-    const fields = meta && meta.fields ? Object.keys(meta.fields) : [];
-    return fields.length ? ` { ${fields.join(', ')} }` : '';
+    return (meta && meta.fields) || {};
+  }
+
+  function schemaProjectionFrom(fields) {
+    const keys = Object.keys(fields);
+    return keys.length ? ` { ${keys.join(', ')} }` : '';
+  }
+
+  // 上传字段白名单：主键与原型污染向量不得作为写入路径（spec/02 `field`）。
+  const FORBIDDEN_FIELD_SEGMENTS = new Set(['_id', '__proto__', 'constructor', 'prototype']);
+
+  /**
+   * 由 schema 字段树生成可写点路径白名单。只允许标量 `string` / `file` 字段；
+   * `object` 字段下钻为 `a.b`；`_id`、`$` 前缀与原型污染段一律排除（决策 S3）。
+   */
+  function allowedFieldPaths(fields, prefix = '') {
+    const out = [];
+    for (const [key, defn] of Object.entries(fields || {})) {
+      if (key.startsWith('$') || FORBIDDEN_FIELD_SEGMENTS.has(key)) continue;
+      const path = prefix ? `${prefix}.${key}` : key;
+      const nested = defn && typeof defn === 'object' ? defn.fields : null;
+      if (nested && typeof nested === 'object') {
+        out.push(...allowedFieldPaths(nested, path));
+        continue;
+      }
+      const type = typeof defn === 'string' ? defn : defn && defn.type;
+      if (type === 'string' || type === 'file') out.push(path);
+    }
+    return out;
   }
 
   const names = resources || filterArchived(store.list());
@@ -216,7 +252,9 @@ async function storeApiPlugin(fastify, opts) {
     const oneParams = (id) => ({ c0: { [idField]: id } });
     // 显式投影（spec/01+02）：GQL 省略投影段 = 只返回 _id（三端 core 契约）。
     // 列表路由仅在 q 缺失时用它；q 存在时投影完全由 q 决定，适配层不追加。
-    const proj = schemaProjection(store, name);
+    const fields = schemaFields(store, name);
+    const proj = schemaProjectionFrom(fields);
+    const allowedFields = new Set(allowedFieldPaths(fields));
 
     fastify.get(base, scoped(async (req) => {
       const params = parseQueryParams(req.query);
@@ -251,7 +289,7 @@ async function storeApiPlugin(fastify, opts) {
       // spec/03 判定顺序第 1 层：未注入 uploadResolver → 501
       if (!uploadResolver) throw uploadNotConfigured(`POST ${base}/:id/file 未注入 uploadResolver`);
       const bytes = requireUploadBody(req); // 空体 400 / 超限 413
-      const fp = fieldPathOf(req);
+      const fp = fieldPathOf(req, allowedFields);
       const rec = await store.queryOne(
         `${name}($condition: @c0)${proj}`,
         { c0: { [idField]: req.params.id } },

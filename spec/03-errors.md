@@ -22,6 +22,8 @@ HTTP 4xx/5xx
 | 下载路由 `GET /{resource}/{id}/file`：记录不存在 / 文件字段为空 | 404 | `NOT_FOUND` |
 | 下载路由 `GET /{resource}/{id}/file`：`fileResolver` 读取时资源无任何可读副本（core 稳定前缀 `ERR_RESOURCE_NOT_FOUND:`） | 404 | `NOT_FOUND` |
 | 请求体缺失 / 非 JSON 对象 | 400 | `INVALID_BODY` |
+| 请求体声明 JSON 但语法非法 / 空体（Fastify parser 错误） | 400 | `INVALID_BODY` |
+| 上传 `?field=` 未命中 schema 可写白名单 | 400 | `INVALID_PARAM` |
 | `p.*` 值非法（JSON 解析失败） | 400 | `INVALID_PARAM` |
 | GQL 解析失败（store 抛出，core 稳定前缀 `ERR_GQL_PARSE:`） | 400 | `GQL_PARSE` |
 
@@ -36,6 +38,7 @@ HTTP 4xx/5xx
 | 上传路由 `POST /{resource}/{id}/file`：字节体超过 `uploadLimit` | 413 | `UPLOAD_TOO_LARGE` |
 | 上传路由 `POST /{resource}/{id}/file`：未注入 `uploadResolver` | 501 | `UPLOAD_NOT_CONFIGURED` |
 | 下载路由 `GET /{resource}/{id}/file`：未注入 `fileResolver` | 501 | `FILE_NOT_CONFIGURED` |
+| store 写探针未命中（core 稳定前缀 `ERR_NOT_FOUND:`，如 `DELETE` 的 `_id` 不存在） | 404 | `not_found` |
 
 ## 判定顺序（双端实现必须一致）
 
@@ -47,7 +50,9 @@ HTTP 4xx/5xx
 4. core 稳定前缀类错误（构造后剥离，不对中文文案做脆弱匹配）：
    - GQL 解析失败（`ERR_GQL_PARSE:`）→ 400 `GQL_PARSE`
    - 资源无任何可读副本（`ERR_RESOURCE_NOT_FOUND:`）→ 404 `NOT_FOUND`
-   两条的 `message` 均为**剥离前缀后的 core 原文**。
+   - 写探针未命中（`ERR_NOT_FOUND:`）→ 404 `not_found`
+   前两条的 `message` 为**剥离前缀后的 core 原文**；`ERR_NOT_FOUND:` 的 `message` **原样保留前缀**
+   （与 gRPC `details` / MCP `message` 同口径，跨协议机器码统一为 `not_found`）。
 5. `queryOne` 空结果（含 file 子路由「记录不存在 / 字段为空」）→ 404
 6. 其余一律 500 透传
 

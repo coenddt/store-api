@@ -112,6 +112,12 @@ const GUARD_STATUS = {
  * @param {Function|null} PermissionErrorClass store 的权限错误类（按类型判定，禁按 message 匹配）
  */
 function mapError(err, PermissionErrorClass) {
+  // parser 阶段：非法 JSON / 空 JSON 体（Fastify FST_ERR_CTP_INVALID_JSON_BODY /
+  // FST_ERR_CTP_EMPTY_JSON_BODY）→ 400 INVALID_BODY（spec/03 判定顺序第 2 层）。
+  // 不映射时 Fastify 默认 500，与 spec「请求体非法 ⇒ 400」冲突（决策 E1）。
+  if (err && (err.code === 'FST_ERR_CTP_INVALID_JSON_BODY' || err.code === 'FST_ERR_CTP_EMPTY_JSON_BODY')) {
+    return { statusCode: 400, body: errorPayload('INVALID_BODY', err.message) };
+  }
   // parser 阶段 bodyLimit 抢先拒绝（Fastify FST_ERR_CTP_BODY_TOO_LARGE，§4.2 parser bodyLimit）
   // → 413 UPLOAD_TOO_LARGE（spec/03；error.code 与 payload code 不同，单列一支）
   if (err && err.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
@@ -144,6 +150,12 @@ function mapError(err, PermissionErrorClass) {
   // message 剥前缀取原文（与 GQL_PARSE 同构；禁按文案匹配）。
   if (err && typeof err.message === 'string' && err.message.startsWith('ERR_RESOURCE_NOT_FOUND:')) {
     return { statusCode: 404, body: errorPayload('NOT_FOUND', err.message.slice('ERR_RESOURCE_NOT_FOUND:'.length)) };
+  }
+  // spec/03 判定顺序第 4 层（v2 收口）：`ERR_NOT_FOUND:` 是写探针未命中（如 DELETE 的
+  // _id 不存在）——「资源不存在」统一 404 语义；code 保留 core machine code `not_found`
+  // （与 gRPC details / MCP not_found 同口径），message 原样透传。
+  if (err && storeCode(err) === 'not_found') {
+    return { statusCode: 404, body: errorPayload('not_found', err.message == null ? null : err.message) };
   }
   return { statusCode: 500, body: errorPayload(storeCode(err), err ? err.message : null) };
 }

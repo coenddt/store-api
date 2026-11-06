@@ -122,4 +122,9 @@ def map_error(err: BaseException, permission_error: type[BaseException] | None) 
     # message 剥前缀取原文（与 GQL_PARSE 同构；禁按文案匹配）。
     if text.startswith("ERR_RESOURCE_NOT_FOUND:"):
         return StoreApiError(404, "NOT_FOUND", text[len("ERR_RESOURCE_NOT_FOUND:"):] or None)
+    # spec/03 判定顺序第 4 层（v2 收口）：`ERR_NOT_FOUND:` 是写探针未命中（如 DELETE 的
+    # _id 不存在）——「资源不存在」统一 404 语义；code 保留 core machine code `not_found`
+    # （与 gRPC details / MCP not_found 同口径），message 原样透传。
+    if store_code(err) == "not_found":
+        return StoreApiError(404, "not_found", text or None)
     return StoreApiError(500, store_code(err), text or None)

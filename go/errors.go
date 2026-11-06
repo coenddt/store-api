@@ -64,6 +64,16 @@ func gqlParseMessage(err error) string {
 	return strings.TrimPrefix(err.Error(), gqlParsePrefix)
 }
 
+// isNotFoundError 判定写探针未命中（core 稳定前缀 ERR_NOT_FOUND:）。
+// 与 isPermissionError 同构（core 类型级契约）；spec/03 v2 收口：资源不存在统一 404。
+func isNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return s == "ERR_NOT_FOUND" || strings.HasPrefix(s, "ERR_NOT_FOUND:")
+}
+
 // permCode 权限错误码：剥离稳定前缀取语义段（如 "无写入权限"），保证 code 非空可判。
 func permCode(err error) string {
 	s := strings.TrimPrefix(err.Error(), "ERR_PERMISSION:")
@@ -104,6 +114,10 @@ func writeError(w http.ResponseWriter, err error) {
 	} else if isGqlParseError(err) {
 		// spec/03 判定顺序第 3 层：GQL 解析失败 → 400 GQL_PARSE（message 剥前缀取原文）
 		status, code, message = http.StatusBadRequest, "GQL_PARSE", gqlParseMessage(err)
+	} else if isNotFoundError(err) {
+		// spec/03 判定顺序第 4 层（v2 收口）：写探针未命中（ERR_NOT_FOUND:）⇒
+		// 「资源不存在统一 404」；code 保留 core machine code `not_found`，message 原样透传。
+		status, code, message = http.StatusNotFound, "not_found", err.Error()
 	} else {
 		// 其余 store 错误（数据库、连接、方言等）500 透传；message 为空时显式 null
 		status, code = http.StatusInternalServerError, "STORE_ERROR"

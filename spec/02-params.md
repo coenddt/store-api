@@ -15,6 +15,11 @@
 - `field` 为**点路径**（如 `images.full` / `file`），逐段取对象属性；缺省（不传）时用适配器选项 `fileField`。
 - 仅支持点路径寻址（`a.b`）；**不支持**数组下标 / 通配 / 表达式。
 - 路径任一段缺失 ⇒ 视同「文件字段为空」⇒ 404 `NOT_FOUND`（与 `fileField` 缺失同判定）。
+- **上传白名单（写路径收窄）**：`POST /{resource}/{id}/file` 的显式 `field` 必须命中该资源 schema
+  字段树生成的**可写点路径白名单**——只含标量 `string` / `file` 字段，`object` 字段下钻为 `a.b`；
+  `_id`、`$` 前缀段与 `__proto__` / `constructor` / `prototype` 一律排除。未命中 ⇒
+  400 `INVALID_PARAM`，message 明确列出允许字段（禁止把上传写成 `ownerId` / `password` 等任意字段）。
+  缺省回落 `fileField`（装配方受信配置，不受白名单约束）；下载（`GET`）只读取，不受白名单限制。
 - 该参数**仅**对 file 子路由生效；列表 / 单条路由忽略之（不报错）。
 
 ### `q` 的形态

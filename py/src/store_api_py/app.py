@@ -180,19 +180,20 @@ def create_app(
     for name in names:
         # 显式投影（spec/01+02）：GQL 省略投影段 = 只返回 _id（三端 core 契约）。
         # 列表路由仅在 q 缺失时用它；q 存在时投影完全由 q 决定，适配层不追加。
-        proj = _schema_projection(store, name)
+        fields = _schema_fields(store, name)
+        proj = _schema_projection_from(fields)
         _register_resource(
-            app, store, name, prefix, id_field, permission_error, proj,
+            app, store, name, prefix, id_field, permission_error, proj, fields,
             file_field, file_resolver, upload_resolver, upload_limit,
         )
 
     return app
 
 
-def _schema_projection(store: Any, name: str) -> str:
-    """从 store 元数据生成显式投影串（' { f1, f2 }'）。
+def _schema_fields(store: Any, name: str) -> dict:
+    """取资源字段定义（投影与上传白名单共用同一份元数据，禁两处漂移）。
     取值顺序：store.get(name)（nodejs 形态）→ py_store.schema 模块（py-store 未在 Store 类暴露 get）。
-    两者皆不可得 / fields 为空 → 空串（无投影，data 仅 _id——上游 schema 定义不完整的显式后果）。"""
+    两者皆不可得 / fields 为空 → 空 dict（上游 schema 定义不完整的显式后果）。"""
     fields: dict | None = None
     get = getattr(store, "get", None)
     if callable(get):
@@ -211,8 +212,43 @@ def _schema_projection(store: Any, name: str) -> str:
             fields = (py_schema.get(name) or {}).get("fields")
         except Exception:
             fields = None
-    keys = list((fields or {}).keys())
+    return fields or {}
+
+
+def _schema_projection_from(fields: dict) -> str:
+    keys = list(fields.keys())
     return f" {{ {', '.join(keys)} }}" if keys else ""
+
+
+def _schema_projection(store: Any, name: str) -> str:
+    """从 store 元数据生成显式投影串（' { f1, f2 }'）；无字段 → 空串。"""
+    return _schema_projection_from(_schema_fields(store, name))
+
+
+# 上传字段白名单的硬禁止段：主键与原型污染向量不得作为写入路径（spec/02 `field`）。
+_FORBIDDEN_FIELD_SEGMENTS = frozenset({"_id", "__proto__", "constructor", "prototype"})
+
+
+def _allowed_field_paths(fields: dict, prefix: str = "") -> set[str]:
+    """由 schema 字段树生成可写点路径白名单（spec/02 `field`）。
+
+    只允许标量 `string` / `file` 字段；`object` 字段下钻为 `a.b` 形式；
+    `_id`、`$` 前缀与原型污染段一律排除。白名单把上传写入面从「任意点路径」
+    收窄到 schema 已声明字段（决策 S3）。
+    """
+    out: set[str] = set()
+    for key, defn in (fields or {}).items():
+        if key.startswith("$") or key in _FORBIDDEN_FIELD_SEGMENTS:
+            continue
+        path = f"{prefix}.{key}" if prefix else key
+        nested = defn.get("fields") if isinstance(defn, dict) else None
+        if isinstance(nested, dict) and nested:
+            out |= _allowed_field_paths(nested, path)
+            continue
+        typ = defn if isinstance(defn, str) else (defn or {}).get("type")
+        if typ in ("string", "file"):
+            out.add(path)
+    return out
 
 
 def _guard(permission_error: type[BaseException] | None) -> Callable:
@@ -250,13 +286,20 @@ async def _read_upload_body(request: Request, upload_limit: int) -> bytes:
     """上传字节体（决策 B'）：空体 → 400 EMPTY_BODY；超限 → 413 UPLOAD_TOO_LARGE。
 
     FastAPI/starlette 无 Fastify 式 parser/bodyLimit，故 upload_limit 是 py 端唯一防线。
+    必须**边读边限流**：`request.stream()` 分块累计，一超限立即中断并释放已缓冲字节，
+    绝不先 `await request.body()` 把超大请求整读入内存（决策 S1）。
     """
-    body = await request.body()
-    if not body:
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > upload_limit:
+            chunks.clear()  # 超限即断：不再接收后续分块，已缓冲字节立刻释放
+            raise too_large(f"上传字节体超过上限 {upload_limit} 字节")
+        chunks.append(chunk)
+    if total == 0:
         raise empty_body(f"上传请求体为空: {request.method} {request.url.path}")
-    if len(body) > upload_limit:
-        raise too_large(f"上传字节体 {len(body)} 字节超过上限 {upload_limit}")
-    return body
+    return b"".join(chunks)
 
 
 def _set_by_path(field_path: str, value: Any) -> dict:
@@ -276,6 +319,7 @@ def _register_resource(
     id_field: str,
     permission_error: type[BaseException] | None,
     proj: str,
+    fields: dict,
     file_field: str,
     file_resolver: Callable[[Request, dict, str], Any] | None,
     upload_resolver: Callable[[Request, dict, str], Any] | None,
@@ -284,11 +328,21 @@ def _register_resource(
     # 工厂函数隔离闭包：handler 签名只含 Request 与路径参数，
     # 否则 FastAPI 会把捕获变量解析成查询参数（缺参即 422）
     base = f"{prefix}/{name}"
+    allowed_fields = _allowed_field_paths(fields)
 
-    def _field_path(request: Request) -> str:
-        # 请求级字段路径：?field= 优先，缺省回落插件级 file_field（spec/02-params.md）
+    def _field_path(request: Request, allowed: set[str] | None = None) -> str:
+        # 请求级字段路径：?field= 优先，缺省回落插件级 file_field（spec/02-params.md）。
+        # 上传（写）必须命中 schema 白名单；下载（读）不限制。
         f = request.query_params.get("field")
-        return f if f else file_field
+        if not f:
+            return file_field
+        if allowed is not None and f not in allowed:
+            raise StoreApiError(
+                400,
+                "INVALID_PARAM",
+                f"field 不在可写字段白名单: {f}；允许: {', '.join(sorted(allowed)) or '(无)'}",
+            )
+        return f
 
     @app.get(base)
     @_guard(permission_error)
@@ -335,7 +389,7 @@ def _register_resource(
         if upload_resolver is None:
             raise upload_not_configured(f"POST {base}/{{rid}}/file 未注入 upload_resolver")
         await _read_upload_body(request, upload_limit)  # 空体 400 / 超限 413
-        fp = _field_path(request)
+        fp = _field_path(request, allowed_fields)
         rec = await store.query_one(f"{name}($condition: @c0){proj}", {"c0": {id_field: rid}})
         if rec is None:
             raise not_found(f"记录不存在: {id_field}={rid}")

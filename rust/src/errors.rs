@@ -65,8 +65,8 @@ pub fn store_code(err: &str) -> String {
     // 无前缀错误一律 STORE_ERROR——禁把错误文案整串当 code（与 node/go 版对齐）。
     //
     // A1：`ERR_NOT_FOUND:`（写探针未命中行）**不是权限错误**，故 code 取 core 的
-    // machine code `not_found`（不是 ERR_PERMISSION）；本函数只定 code、不改 HTTP 状态，
-    // 状态语义见 [`map_store_err`]（未命中仍走 500 透传，不臆造 404）。
+    // machine code `not_found`（不是 ERR_PERMISSION）；状态语义见 [`map_store_err`]
+    // （v2 收口：资源不存在统一 404，见 spec/03 判定顺序第 4 层）。
     const KNOWN: [(&str, &str); 5] = [
         ("ERR_PERMISSION:", "ERR_PERMISSION"),
         // machine code 统一为 no_context（与 node/py 同口径；map_store_err 亦按此判定）
@@ -131,6 +131,16 @@ pub fn map_store_err(err: &str, is_permission_error: impl Fn(&str) -> bool) -> S
             message: Some(msg.to_string()),
         };
     }
+    // spec/03 判定顺序第 4 层（v2 收口）：`ERR_NOT_FOUND:` 是写探针未命中（如 DELETE 的
+    // _id 不存在）——「资源不存在」统一 404 语义；code 保留 core machine code `not_found`
+    // （与 node/py / gRPC details / MCP not_found 同口径），message 原样透传。
+    if store_code(err) == "not_found" {
+        return StoreApiError {
+            status: StatusCode::NOT_FOUND,
+            code: "not_found".into(),
+            message: store_message(err),
+        };
+    }
     StoreApiError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         code: store_code(err),
@@ -143,13 +153,13 @@ mod tests {
     use super::{map_store_err, store_code};
     use axum::http::StatusCode;
 
-    /// A1：行不存在 ≠ 越权——不得映射为 ERR_PERMISSION / 403
+    /// A1：行不存在 ≠ 越权——不得映射为 ERR_PERMISSION / 403；v2 收口统一 404 语义
     #[test]
     fn not_found_is_not_permission() {
         let err = "ERR_NOT_FOUND:目标记录不存在（写条件未命中任何行，_id 不存在或已被删除）";
         assert_eq!(store_code(err), "not_found");
         let mapped = map_store_err(err, |e| e.starts_with("ERR_PERMISSION"));
-        assert_eq!(mapped.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(mapped.status, StatusCode::NOT_FOUND);
         assert_eq!(mapped.code, "not_found");
         assert_eq!(mapped.message.as_deref(), Some(err));
     }

@@ -59,7 +59,7 @@ func main() {
 ## 错误映射（spec/03，no-error-masking）
 
 - 统一形态 `{"error":{"code":..., "message":<store 原文，原样透传>}}`；message 取不到置 null，禁伪造。
-- 判定顺序：适配层守卫(400) → 权限前缀 `ERR_PERMISSION:`(403) → queryOne 空(404) → 其余 500 透传。
+- 判定顺序：适配层守卫(400) → 权限前缀 `ERR_PERMISSION:`(403) → queryOne 空(404) → `ERR_NOT_FOUND:` 写探针未命中(404) → 其余 500 透传。
 - `update` 影响 0 行返回 `200 {"data": null}`（中性返回不当错误）。
 - 权限错误按 core 稳定前缀判定（`ERR_PERMISSION:`），禁按文案匹配。
 
