@@ -431,6 +431,22 @@ def test_upload_body_streams_and_aborts_on_limit():
     assert ei2.value.code == "EMPTY_BODY"
 
 
+def test_download_filename_crlf_is_sanitized():
+    """fileName 的 CR/LF 必须清洗：改前 py 会原样写入 Content-Disposition（可拆出额外响应头）。"""
+    store = MockStore()
+    store.rows["u1"] = {"_id": "u1", "name": "a", "file": "ref"}
+
+    async def _fr(request, rec, rid):
+        return {"fileName": "a\r\nX-Injected: 1", "body": b"x", "contentType": "text/plain"}
+
+    res = TestClient(build_app(store, file_resolver=_fr)).get("/api/user/u1/file")
+    assert res.status_code == 200
+    assert "x-injected" not in res.headers
+    assert "\r" not in res.headers["content-disposition"]
+    assert "\n" not in res.headers["content-disposition"]
+    assert "X-Injected: 1" in res.headers["content-disposition"]
+
+
 # ── R2-04：policy_provider 请求入口作用域化（与 node test/smoke.test.js 同构，双端 parity）──
 
 

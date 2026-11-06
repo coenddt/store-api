@@ -391,6 +391,19 @@ test('上传 ?field= 白名单：schema 未声明 / 主键 / 非 string|file ⇒
   assert.equal(ok.statusCode, 200);
 });
 
+test('下载 fileName 含 CR/LF ⇒ 清洗，200 且不拆分响应头', async () => {
+  const store = new MockStore();
+  store.rows.set('u1', { _id: 'u1', name: 'a', file: 'ref' });
+  const app = await buildApp(store, {
+    fileResolver: async () => ({ fileName: 'a\r\nX-Injected: 1', body: Buffer.from('x'), contentType: 'text/plain' }),
+  });
+  const r = await app.inject({ method: 'GET', url: '/api/user/u1/file' });
+  assert.equal(r.statusCode, 200); // 改前：500 ERR_INVALID_CHAR
+  assert.equal(r.headers['x-injected'], undefined);
+  assert.ok(!/[\r\n]/.test(r.headers['content-disposition']));
+  assert.ok(r.headers['content-disposition'].includes('X-Injected: 1'));
+});
+
 // ── R2-04：policyProvider 请求入口作用域化（与 py tests/test_smoke.py 同构，双端 parity）──
 
 test('policyProvider 装配守卫 + requireContext 覆盖：无 ctx 请求 → no_context(403)；返回 null → 行为同现状', async (t) => {
