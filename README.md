@@ -7,8 +7,8 @@
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![spec](https://img.shields.io/badge/spec-00--05-informational)
 
-- `store-api-node` — Fastify plugin, npm, version 0.6.2.
-- `store-api-py` — FastAPI factory, PyPI, version 0.6.2.
+- `store-api-node` — Fastify plugin, npm, version 0.6.3.
+- `store-api-py` — FastAPI factory, PyPI, version 0.6.3.
 - `spec/` — six documents that decide routing, params, errors, context and headers once, for both runtimes.
 
 > Canonical English README. Chinese translation: [README.zh-CN.md](https://github.com/coenddt/store-api/blob/main/README.zh-CN.md)
