@@ -26,7 +26,35 @@ type Options struct {
 	ContextProvider func(r *http.Request) (*gostore.Context, error)
 	// Resources 显式资源名；nil 时取 store.ListSchemas() 并过滤归档表。
 	Resources []string
+	// FileField 下载/上传子路由的 `?field=` 缺省值（spec/02：空串取 "file"）。
+	FileField string
+	// FileResolver 下载接缝（spec/03 判定顺序第 1 层：未注入 ⇒ 501 FILE_NOT_CONFIGURED）。
+	// 调用发生在 queryOne 命中且字段非空之后，由接入方决定媒体类型与文件名。
+	FileResolver func(r *http.Request, rec map[string]any, id string) (*FileOut, error)
+	// UploadResolver 上传接缝（未注入 ⇒ 501 UPLOAD_NOT_CONFIGURED）。
+	// 返回值 Ref 为空 ⇒ 500（禁静默），非空则经 update 回写到 `?field=` 指向的字段。
+	UploadResolver func(r *http.Request, rec map[string]any, id string) (*UploadOut, error)
+	// UploadLimit 上传字节体上限（字节；<=0 取 32MiB，与 node 端缺省一致）。
+	UploadLimit int64
 }
+
+// FileOut 下载接缝的返回值（spec/05）：ContentType 缺省 application/octet-stream，
+// FileName 缺省 file；Body 为原始字节流。
+type FileOut struct {
+	Body        []byte
+	ContentType string
+	FileName    string
+}
+
+// UploadOut 上传接缝的返回值：Ref 为资源引用，回写到目标字段。
+type UploadOut struct {
+	Ref string
+}
+
+const (
+	defaultFileField   = "file"
+	defaultUploadLimit = 32 * 1024 * 1024
+)
 
 // archiveSuffix 归档表后缀（spec/01：XxxDeleted 且 Xxx 也在列表中 ⇒ 归档表，不生成路由）。
 const archiveSuffix = "Deleted"
@@ -63,6 +91,12 @@ func New(mux *http.ServeMux, st *gostore.Store, opts Options) error {
 	if opts.IDField == "" {
 		opts.IDField = "_id"
 	}
+	if opts.FileField == "" {
+		opts.FileField = defaultFileField
+	}
+	if opts.UploadLimit <= 0 {
+		opts.UploadLimit = defaultUploadLimit
+	}
 	prefix := strings.TrimSuffix(opts.Prefix, "/")
 
 	names := opts.Resources
@@ -86,6 +120,8 @@ func New(mux *http.ServeMux, st *gostore.Store, opts Options) error {
 		collection := name
 		idField := opts.IDField
 		base := prefix + "/" + name
+		// 上传可写点路径白名单（spec/02：只含标量 string/file，object 下钻；_id / $ 前缀 / 原型污染段排除）
+		allowedFields := allowedFieldPaths(st.SchemaFields(collection))
 
 		handler := func(serve func(w http.ResponseWriter, r *http.Request, ctx *gostore.Context)) http.HandlerFunc {
 			return func(w http.ResponseWriter, r *http.Request) {
@@ -191,6 +227,16 @@ func New(mux *http.ServeMux, st *gostore.Store, opts Options) error {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"data": out})
+		}))
+
+		// GET /{resource}/{id}/file —— 下载（spec/01/03/05）
+		mux.HandleFunc("GET "+base+"/{id}/file", handler(func(w http.ResponseWriter, r *http.Request, ctx *gostore.Context) {
+			serveDownload(w, r, ctx, st, opts, collection, idField)
+		}))
+
+		// POST /{resource}/{id}/file —— 上传（spec/01/02/03）
+		mux.HandleFunc("POST "+base+"/{id}/file", handler(func(w http.ResponseWriter, r *http.Request, ctx *gostore.Context) {
+			serveUpload(w, r, ctx, st, opts, collection, idField, allowedFields)
 		}))
 	}
 	return nil

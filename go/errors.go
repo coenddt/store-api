@@ -20,10 +20,24 @@ type adapterError struct {
 
 func (e *adapterError) Error() string { return e.Message }
 
-func invalidBody(msg string) error      { return &adapterError{"INVALID_BODY", msg, http.StatusBadRequest} }
-func invalidParam(msg string) error     { return &adapterError{"INVALID_PARAM", msg, http.StatusBadRequest} }
-func notFound(msg string) error         { return &adapterError{"NOT_FOUND", msg, http.StatusNotFound} }
+func invalidBody(msg string) error { return &adapterError{"INVALID_BODY", msg, http.StatusBadRequest} }
+func invalidParam(msg string) error {
+	return &adapterError{"INVALID_PARAM", msg, http.StatusBadRequest}
+}
+func notFound(msg string) error { return &adapterError{"NOT_FOUND", msg, http.StatusNotFound} }
 
+// file 子路由错误档（spec/03 状态码映射表）：
+// 未注入 resolver ⇒ 501；空体 ⇒ 400 EMPTY_BODY；超限 ⇒ 413 UPLOAD_TOO_LARGE。
+func emptyBody(msg string) error { return &adapterError{"EMPTY_BODY", msg, http.StatusBadRequest} }
+func tooLarge(msg string) error {
+	return &adapterError{"UPLOAD_TOO_LARGE", msg, http.StatusRequestEntityTooLarge}
+}
+func uploadNotConfigured(msg string) error {
+	return &adapterError{"UPLOAD_NOT_CONFIGURED", msg, http.StatusNotImplemented}
+}
+func fileNotConfigured(msg string) error {
+	return &adapterError{"FILE_NOT_CONFIGURED", msg, http.StatusNotImplemented}
+}
 
 // mapContextError 分类 provider 错误（spec/04）：
 // PermissionError ⇒ 403（RBAC 拒绝，与业务权限拒绝同一语义）；其余 ⇒ 401 CONTEXT_ERROR。
@@ -74,6 +88,14 @@ func isNotFoundError(err error) bool {
 	return s == "ERR_NOT_FOUND" || strings.HasPrefix(s, "ERR_NOT_FOUND:")
 }
 
+// resourceNotFoundPrefix 下载 resolver 读取时「资源无任何可读副本」的稳定前缀
+// （spec/03：core resourceOpen 零副本 ⇒ 404 NOT_FOUND，message 剥前缀取原文）。
+const resourceNotFoundPrefix = "ERR_RESOURCE_NOT_FOUND:"
+
+func isResourceNotFoundError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), resourceNotFoundPrefix)
+}
+
 // permCode 权限错误码：剥离稳定前缀取语义段（如 "无写入权限"），保证 code 非空可判。
 func permCode(err error) string {
 	s := strings.TrimPrefix(err.Error(), "ERR_PERMISSION:")
@@ -118,6 +140,11 @@ func writeError(w http.ResponseWriter, err error) {
 		// spec/03 判定顺序第 4 层（v2 收口）：写探针未命中（ERR_NOT_FOUND:）⇒
 		// 「资源不存在统一 404」；code 保留 core machine code `not_found`，message 原样透传。
 		status, code, message = http.StatusNotFound, "not_found", err.Error()
+	} else if isResourceNotFoundError(err) {
+		// spec/03 判定顺序第 4 层：resolver 读取时资源无任何可读副本
+		// （ERR_RESOURCE_NOT_FOUND:）⇒ 404 NOT_FOUND，message 剥前缀取原文。
+		status, code, message = http.StatusNotFound, "NOT_FOUND",
+			strings.TrimPrefix(err.Error(), resourceNotFoundPrefix)
 	} else {
 		// 其余 store 错误（数据库、连接、方言等）500 透传；message 为空时显式 null
 		status, code = http.StatusInternalServerError, "STORE_ERROR"

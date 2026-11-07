@@ -346,6 +346,17 @@ fn field_path_of(raw: Option<&str>, fallback: &str) -> String {
     .unwrap_or_else(|| fallback.to_string())
 }
 
+/// spec/02 决策 S3：上传写入路径的硬禁止段（主键与原型污染向量）。
+/// 完整白名单（schema 已声明且类型为 string|file、点路径子段存在）需要宿主字段树；
+/// 当前 `Store::schema_fields` 只提供字段名，故本端先做硬禁止段校验，
+/// 类型/子段校验作为跨方向项（需 rust-store/host 暴露 schema_defn）。
+const FORBIDDEN_FIELD_SEGMENTS: [&str; 4] = ["_id", "__proto__", "constructor", "prototype"];
+
+fn forbidden_field_segment(path: &str) -> Option<&str> {
+    path.split('.')
+        .find(|seg| seg.starts_with('$') || FORBIDDEN_FIELD_SEGMENTS.contains(seg))
+}
+
 /// 点路径取值：任一段缺失 ⇒ None（spec/02：视同「文件字段为空」）
 fn pick_field<'a>(rec: &'a Value, path: &str) -> Option<&'a Value> {
     let mut cur = rec;
@@ -474,6 +485,12 @@ async fn upload_file(
             .into_response();
     }
     let field_path = field_path_of(raw.as_deref(), &state.file_field);
+    if let Some(seg) = forbidden_field_segment(&field_path) {
+        return StoreApiError::invalid_param(format!(
+            "field 含禁止写入段 \"{seg}\": {field_path}（spec/02 决策 S3）"
+        ))
+        .into_response();
+    }
     let mut params = Map::new();
     params.insert("c0".into(), json!({ state.id_field.as_ref(): id }));
     let proj = file_projection(&state, &resource, &field_path).await;
