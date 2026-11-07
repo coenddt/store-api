@@ -49,6 +49,12 @@ pub trait Store: Send + Sync {
     async fn schema_fields(&self, _schema: &str) -> Vec<String> {
         Vec::new()
     }
+    /// schema 结构定义（宿主 `Store::schema_definition` 的镜像）：`{name, collection, fields}`，
+    /// `fields` 每项含 `type` / `fields`（嵌套 object，可递归）。未知 schema 返回 `Err`。
+    /// 用于 spec/02 决策 S3 的上传 `?field=` 白名单（类型语义留在协议皮，宿主只暴露信息）。
+    async fn schema_definition(&self, _schema: &str) -> Result<Value, StoreErr> {
+        Err("schema_definition 未实现".into())
+    }
     /// 权限错误判定（spec/03：按类型判定。Rust 形态 = core `ERR_PERMISSION:` 前缀契约）
     fn is_permission_error(&self, err: &StoreErr) -> bool {
         err.starts_with("ERR_PERMISSION")
@@ -346,15 +352,63 @@ fn field_path_of(raw: Option<&str>, fallback: &str) -> String {
     .unwrap_or_else(|| fallback.to_string())
 }
 
-/// spec/02 决策 S3：上传写入路径的硬禁止段（主键与原型污染向量）。
-/// 完整白名单（schema 已声明且类型为 string|file、点路径子段存在）需要宿主字段树；
-/// 当前 `Store::schema_fields` 只提供字段名，故本端先做硬禁止段校验，
-/// 类型/子段校验作为跨方向项（需 rust-store/host 暴露 schema_defn）。
+/// spec/02 决策 S3：上传写入路径白名单的禁用段（主键与原型污染向量）。
+/// `?field=` 必须精确命中「schema 声明为 string|file 的叶子点路径」，
+/// 未声明 / object 中间节点 / 非 string|file 类型一律 400 `INVALID_PARAM`。
 const FORBIDDEN_FIELD_SEGMENTS: [&str; 4] = ["_id", "__proto__", "constructor", "prototype"];
 
-fn forbidden_field_segment(path: &str) -> Option<&str> {
-    path.split('.')
-        .find(|seg| seg.starts_with('$') || FORBIDDEN_FIELD_SEGMENTS.contains(seg))
+/// 递归收集可写叶子点路径（与 node `allowedFieldPaths` / py `_allowed_field_paths` 同构）：
+/// object 下钻为 `a.b`，只收 `string` / `file` 标量，跳过禁用段与 `$` 前缀。
+fn allowed_field_paths(fields: &Map<String, Value>, prefix: &str, out: &mut Vec<String>) {
+    for (key, defn) in fields {
+        if key.starts_with('$') || FORBIDDEN_FIELD_SEGMENTS.contains(&key.as_str()) {
+            continue;
+        }
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        if let Some(nested) = defn.get("fields").and_then(|v| v.as_object()) {
+            allowed_field_paths(nested, &path, out);
+            continue;
+        }
+        let ty = defn.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if ty == "string" || ty == "file" {
+            out.push(path);
+        }
+    }
+}
+
+/// 上传 field 白名单校验（spec/02 决策 S3）。失败返回 400 `INVALID_PARAM` 且带可用列表；
+/// 取不到 schema 定义属配置/宿主故障 ⇒ 500 `STORE_ERROR`（禁静默放行）。
+async fn check_upload_field(
+    state: &AppState,
+    resource: &str,
+    field_path: &str,
+) -> Result<(), StoreApiError> {
+    let defn = state.store.schema_definition(resource).await.map_err(|e| StoreApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        code: "STORE_ERROR".into(),
+        message: Some(format!("读取 schema 定义失败({resource}): {e}")),
+    })?;
+    let mut allowed = Vec::new();
+    if let Some(fields) = defn.get("fields").and_then(|v| v.as_object()) {
+        allowed_field_paths(fields, "", &mut allowed);
+    }
+    allowed.sort();
+    allowed.dedup();
+    if allowed.iter().any(|p| p == field_path) {
+        return Ok(());
+    }
+    let list = if allowed.is_empty() {
+        "（无）".to_string()
+    } else {
+        allowed.join(", ")
+    };
+    Err(StoreApiError::invalid_param(format!(
+        "field 不在可写白名单: {field_path}；可用: {list}（spec/02 决策 S3）"
+    )))
 }
 
 /// 点路径取值：任一段缺失 ⇒ None（spec/02：视同「文件字段为空」）
@@ -485,11 +539,8 @@ async fn upload_file(
             .into_response();
     }
     let field_path = field_path_of(raw.as_deref(), &state.file_field);
-    if let Some(seg) = forbidden_field_segment(&field_path) {
-        return StoreApiError::invalid_param(format!(
-            "field 含禁止写入段 \"{seg}\": {field_path}（spec/02 决策 S3）"
-        ))
-        .into_response();
+    if let Err(e) = check_upload_field(&state, &resource, &field_path).await {
+        return e.into_response();
     }
     let mut params = Map::new();
     params.insert("c0".into(), json!({ state.id_field.as_ref(): id }));

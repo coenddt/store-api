@@ -91,7 +91,14 @@ async fn fresh_router(resource: &str, opts: &CaseOpts) -> axum::Router {
         "fields": {
             "name": { "type": "string" },
             "age": { "type": "number" },
-            "file": { "type": "string" }
+            "file": { "type": "string" },
+            "images": {
+                "type": "object",
+                "fields": {
+                    "full": { "type": "string" },
+                    "thumb": { "type": "string" }
+                }
+            }
         }
     }))
     .expect("注册失败");
@@ -99,9 +106,10 @@ async fn fresh_router(resource: &str, opts: &CaseOpts) -> axum::Router {
     for ddl in [
         // 物理列名走 dialect::physical_of（逻辑名 → snake_case），与宿主持久化口径一致；
         // 用 camelCase 建表会让真实 INSERT 报 `table user has no column named created_at`。
-        // `file` 承载 file 子路由的资源引用（schema 未声明但用例会写入/回写）。
-        &format!("CREATE TABLE \"{resource}\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, file TEXT, created_at INTEGER, updated_at INTEGER, \"__present\" TEXT)"),
-        &format!("CREATE TABLE \"{resource}_deleted\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, file TEXT, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER, \"__present\" TEXT)"),
+        // `file` 承载 file 子路由的资源引用；`images` 承载 ?field= 点路径回写（spec/02），
+        // object 列在 SQLite 侧存 JSON 文本（与 go runner 的 EnsureTables 口径一致）。
+        &format!("CREATE TABLE \"{resource}\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, file TEXT, images TEXT, created_at INTEGER, updated_at INTEGER, \"__present\" TEXT)"),
+        &format!("CREATE TABLE \"{resource}_deleted\" (_id TEXT PRIMARY KEY, name TEXT, age REAL, file TEXT, images TEXT, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER, \"__present\" TEXT)"),
     ] {
         sqlx::query(ddl).execute(&pool).await.expect("DDL 失败");
     }

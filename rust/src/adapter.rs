@@ -80,6 +80,10 @@ impl Store for RustStoreAdapter {
         self.host.schema_fields(schema).unwrap_or_default()
     }
 
+    async fn schema_definition(&self, schema: &str) -> Result<Value, String> {
+        self.host.schema_definition(schema)
+    }
+
     fn is_permission_error(&self, err: &String) -> bool {
         // core 类型级契约：权限错误一律带 ERR_PERMISSION 前缀（core command/mod.rs ERR_PERM_PREFIX）
         err.starts_with("ERR_PERMISSION")

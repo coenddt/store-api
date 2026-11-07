@@ -7,7 +7,9 @@
     { "method": "POST", "path": "/api/user/{id}/file", "useCreatedId": true, "body": "raw:bytes", "headers": { "content-type": "application/octet-stream" }, "expect": { "status": 200, "dataKeys": ["file"] }, "note": "注入 uploadResolver 时：200 + 回写" },
     { "method": "POST", "path": "/api/user/{id}/file", "useCreatedId": true, "body": "raw:", "headers": { "content-type": "application/octet-stream" }, "expect": { "status": 400, "errorCode": "EMPTY_BODY" }, "note": "空体" },
     { "method": "POST", "path": "/api/user/nope/file", "body": "raw:bytes", "headers": { "content-type": "application/octet-stream" }, "expect": { "status": 404, "errorCode": "NOT_FOUND" }, "note": "记录不存在" },
-    { "method": "POST", "path": "/api/user/{id}/file?field=images.full", "useCreatedId": true, "body": "raw:bytes", "headers": { "content-type": "application/octet-stream" }, "expect": { "status": 200, "dataKeys": ["images"] }, "note": "field 点路径回写" },
+    { "method": "POST", "path": "/api/user/{id}/file?field=images.full", "useCreatedId": true, "body": "raw:bytes", "headers": { "content-type": "application/octet-stream" }, "expect": { "status": 200, "dataKeys": ["images"] }, "note": "field 点路径回写：object 子字段且类型为 string ⇒ 允许（决策 S3 正档）" },
+    { "method": "POST", "path": "/api/user/{id}/file?field=age", "useCreatedId": true, "body": "raw:bytes", "headers": { "content-type": "application/octet-stream" }, "expect": { "status": 400, "errorCode": "INVALID_PARAM" }, "note": "决策 S3 反档：非 string|file 类型字段拒绝" },
+    { "method": "POST", "path": "/api/user/{id}/file?field=nope", "useCreatedId": true, "body": "raw:bytes", "headers": { "content-type": "application/octet-stream" }, "expect": { "status": 400, "errorCode": "INVALID_PARAM" }, "note": "决策 S3 反档：schema 未声明字段拒绝（不得穿透为 SQL 500）" },
     { "method": "POST", "path": "/api/user/{id}/file?field=_id", "useCreatedId": true, "body": "raw:bytes", "headers": { "content-type": "application/octet-stream" }, "expect": { "status": 400, "errorCode": "INVALID_PARAM" }, "note": "决策 S3：主键禁止作为上传写入路径" }
   ]
 }
