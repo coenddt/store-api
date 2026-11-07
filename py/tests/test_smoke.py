@@ -451,3 +451,19 @@ def test_policy_provider_profile_view_and_ctx_reuse():
     assert res.json()["data"] == [{"_id": "r1", "name": "redacted"}]
     # 两个请求各解析一次 context_provider（已解析值存 request.state 复用，禁二次调用）
     assert ctx_calls == 2
+
+
+def test_download_filename_crlf_is_sanitized():
+    """fileName 的 CR/LF 必须清洗：改前 py 会原样写入 Content-Disposition（可拆出额外响应头）。"""
+    store = MockStore()
+    store.rows["u1"] = {"_id": "u1", "name": "a", "file": "ref"}
+
+    async def _fr(request, rec, rid):
+        return {"fileName": "a\r\nX-Injected: 1", "body": b"x", "contentType": "text/plain"}
+
+    res = TestClient(build_app(store, file_resolver=_fr)).get("/api/user/u1/file")
+    assert res.status_code == 200
+    assert "x-injected" not in res.headers
+    assert "\r" not in res.headers["content-disposition"]
+    assert "\n" not in res.headers["content-disposition"]
+    assert "X-Injected: 1" in res.headers["content-disposition"]

@@ -251,13 +251,20 @@ async def _read_upload_body(request: Request, upload_limit: int) -> bytes:
     """上传字节体（决策 B'）：空体 → 400 EMPTY_BODY；超限 → 413 UPLOAD_TOO_LARGE。
 
     FastAPI/starlette 无 Fastify 式 parser/bodyLimit，故 upload_limit 是 py 端唯一防线。
+    必须**边读边限流**：`request.stream()` 分块累计，一超限立即中断并释放已缓冲字节，
+    绝不先 `await request.body()` 把超大请求整读入内存（决策 S1）。
     """
-    body = await request.body()
-    if not body:
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > upload_limit:
+            chunks.clear()  # 超限即断：不再接收后续分块，已缓冲字节立刻释放
+            raise too_large(f"上传字节体超过上限 {upload_limit} 字节")
+        chunks.append(chunk)
+    if total == 0:
         raise empty_body(f"上传请求体为空: {request.method} {request.url.path}")
-    if len(body) > upload_limit:
-        raise too_large(f"上传字节体 {len(body)} 字节超过上限 {upload_limit}")
-    return body
+    return b"".join(chunks)
 
 
 def _set_by_path(field_path: str, value: Any) -> dict:

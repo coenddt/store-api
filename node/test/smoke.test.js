@@ -425,3 +425,16 @@ test('policyProvider：profile 覆盖经视图生效（查询面可观察）；c
   // 两个请求各解析一次 contextProvider（onRequest 已解析值存 req 复用，禁二次调用）
   assert.equal(ctxCalls, 2);
 });
+
+test('下载 fileName 含 CR/LF ⇒ 清洗，200 且不拆分响应头', async () => {
+  const store = new MockStore();
+  store.rows.set('u1', { _id: 'u1', name: 'a', file: 'ref' });
+  const app = await buildApp(store, {
+    fileResolver: async () => ({ fileName: 'a\r\nX-Injected: 1', body: Buffer.from('x'), contentType: 'text/plain' }),
+  });
+  const r = await app.inject({ method: 'GET', url: '/api/user/u1/file' });
+  assert.equal(r.statusCode, 200); // 改前：500 ERR_INVALID_CHAR
+  assert.equal(r.headers['x-injected'], undefined);
+  assert.ok(!/[\r\n]/.test(r.headers['content-disposition']));
+  assert.ok(r.headers['content-disposition'].includes('X-Injected: 1'));
+});
