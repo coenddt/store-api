@@ -7,8 +7,8 @@
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![spec](https://img.shields.io/badge/spec-00--05-informational)
 
-- `store-api-node` — Fastify plugin, npm, version 0.6.3.
-- `store-api-py` — FastAPI factory, PyPI, version 0.6.3.
+- `store-api-node` — Fastify plugin, npm, version 1.0.0.
+- `store-api-py` — FastAPI factory, PyPI, version 1.0.0.
 - `spec/` — six documents that decide routing, params, errors, context and headers once, for both runtimes.
 
 > 中文: [README.md](./README.md)
@@ -77,7 +77,10 @@ GET /api/user?q=($condition: @c0, $limit: @l) { name, age }&p.c0={"age":{"$gte":
 
 Values arrive as strings and are coerced once, in a fixed order: `true`/`false` to booleans, `null` to null, integers, floats, then JSON for objects and arrays; anything else stays a string. A repeated `p.tag=a&p.tag=b` binds an array. Literals are rejected: `$limit: 10` must be written `$limit: @l`, because core answers `ERR_GQL_PARSE:` and the skin returns `400 GQL_PARSE`.
 
-`field=images.full` is the only other query parameter, and it affects the byte routes only.
+`field=images.full` is the only other query parameter, and it affects the byte routes only. Since 1.0.0 it is
+constrained by a **schema write whitelist**: only scalar `string` / `file` leaves of the schema field tree are
+accepted (`object` leaves are addressed as `a.b`); `_id`, `$`-prefixed segments and prototype-pollution keys are
+rejected with `400 INVALID_PARAM`. Downloads (reads) are unaffected.
 
 ### Three error states, none of them invented
 
@@ -90,6 +93,16 @@ The skin refuses to flatten failures into one shape.
 Two adjacent cases are kept separate on purpose. A `contextProvider` that throws a non-permission error is `401 CONTEXT_ERROR` — the only 401 the skin produces. A missing resolver is `501 FILE_NOT_CONFIGURED` or `501 UPLOAD_NOT_CONFIGURED`, checked before any store call, so "not wired up" is always distinguishable from "record missing".
 
 Every error body is `{"error": {"code": ..., "message": ...}}`. A message that does not exist becomes `null`, never an invented string. A 2xx response never carries an `error` field.
+
+### Upgrading to 1.0.0 — three behaviour changes
+
+All three move an error from a vague 5xx to the accurate status. Only callers that branch on the old status are affected:
+
+| Case | Before 1.0.0 | 1.0.0 | What downstream must change |
+|---|---|---|---|
+| Body is not valid JSON / is empty | `500` | `400 INVALID_BODY` | Monitoring that lumps "bad request" with "server fault"; retry loops keyed on 5xx |
+| Write probe misses (`ERR_NOT_FOUND:`) | `500` | `404`, code `not_found` | Branches that treat 500 as "backend broken" now treat 404 as "target missing" |
+| Upload `?field=` points at a non-writable leaf | silent success in some runtimes / `500` | `400 INVALID_PARAM` | Declare the field in the schema first; `_id` and `$`-prefixed segments are no longer writable |
 
 ### Identity in, permission out — and two honest headers
 

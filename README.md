@@ -7,8 +7,8 @@
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![spec](https://img.shields.io/badge/spec-00--05-informational)
 
-- `store-api-node` —— Fastify 插件，npm，版本 0.6.3。
-- `store-api-py` —— FastAPI 工厂，PyPI，版本 0.6.3。
+- `store-api-node` —— Fastify 插件，npm，版本 1.0.0。
+- `store-api-py` —— FastAPI 工厂，PyPI，版本 1.0.0。
 - `spec/` —— 六份文档，一次决定路由、参数、错误、上下文与响应头，两个运行时共用。
 
 > English: [README.en.md](./README.en.md)
@@ -79,7 +79,9 @@ GET /api/user?q=($condition: @c0, $limit: @l) { name, age }&p.c0={"age":{"$gte":
 
 值以字符串到达，按固定顺序只转换一次：`true`/`false` 变布尔，`null` 变 null，整数、浮点，然后是对象与数组走 JSON；其余保持字符串。重复的 `p.tag=a&p.tag=b` 绑成数组。字面量被拒绝：`$limit: 10` 必须写成 `$limit: @l`，因为 core 会回 `ERR_GQL_PARSE:`，皮返回 `400 GQL_PARSE`。
 
-`field=images.full` 是另一个查询参数，只影响字节路由。
+`field=images.full` 是另一个查询参数，只影响字节路由。1.0.0 起它受 **schema 可写白名单**约束：只接受 schema
+字段树里的标量 `string` / `file`（`object` 下钻写作 `a.b`），`_id`、`$` 前缀与原型污染段一律 `400 INVALID_PARAM`；
+下载（读）不受限。
 
 ### 三种错误状态，一个都不是发明的
 
@@ -92,6 +94,16 @@ GET /api/user?q=($condition: @c0, $limit: @l) { name, age }&p.c0={"age":{"$gte":
 两个相邻情形被刻意分开。`contextProvider` 抛出非权限错误是 `401 CONTEXT_ERROR` —— 皮产生的唯一 401。缺少 resolver 是 `501 FILE_NOT_CONFIGURED` 或 `501 UPLOAD_NOT_CONFIGURED`，在任何 store 调用之前检查，所以「没接线」永远能与「记录不存在」区分。
 
 每个错误体都是 `{"error": {"code": ..., "message": ...}}`。取不到的 message 置 `null`，绝不编造字符串。2xx 响应永不携带 `error` 字段。
+
+### 1.0.0 升级须知（三处行为变化）
+
+三处都是「错误落点从笼统 5xx 收敛到准确状态码」，只影响按旧状态码分支的调用方：
+
+| 情形 | 1.0.0 之前 | 1.0.0 | 下游要动哪里 |
+|---|---|---|---|
+| 请求体不是合法 JSON / 空体 | `500` | `400 INVALID_BODY` | 把「坏请求」与「服务端故障」分开统计的监控规则；对接 5xx 的重试逻辑 |
+| 写探针 `ERR_NOT_FOUND:` 未命中 | `500` | `404`，code `not_found` | 依赖 500 判断「后端异常」的分支改为 404 判断「目标不存在」 |
+| 上传 `?field=` 指向不可写点 | 部分实现静默成功 / `500` | `400 INVALID_PARAM` | 先补 schema 字段声明；不再能覆盖 `_id` 或写入 `$` 前缀段 |
 
 ### 身份进，权限出 —— 两个诚实的头
 
