@@ -3,7 +3,7 @@
 本文件记录 store-api（node / py / rust / go 四实现共用 spec）的契约变更。
 格式遵循 Keep a Changelog；版本号由发布流程统一 bump。
 
-## [Unreleased]
+## 1.0.0 (2026-11-08)
 
 > 目标版本 **1.0.0**（本轮为破坏性变更集中释放）。本文件不改动 `package.json` / `pyproject.toml` 版本，
 > 由发布流程统一 bump。
